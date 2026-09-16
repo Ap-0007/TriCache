@@ -2,11 +2,15 @@
 
 [![CI](https://github.com/Kareem411/TriCache/actions/workflows/ci.yml/badge.svg)](https://github.com/Kareem411/TriCache/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/badge/docs-VitePress-blue.svg)](https://kareem411.github.io/TriCache/)
-[![Tests](https://img.shields.io/badge/tests-756%20passing-brightgreen)](tests)
-[![Code Quality](https://img.shields.io/badge/oxlint-0%20warnings-brightgreen)](src)
 [![npm version](https://img.shields.io/npm/v/tricache.svg)](https://www.npmjs.com/package/tricache)
+[![npm downloads](https://img.shields.io/npm/dm/tricache.svg)](https://www.npmjs.com/package/tricache)
+[![Tests](https://img.shields.io/badge/tests-809%20passing-brightgreen)](tests)
+[![Code Quality](https://img.shields.io/badge/oxlint-0%20warnings-brightgreen)](src)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node.js ≥ 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
+
+> 🌐 **Documentation Site**: **[https://kareem411.github.io/TriCache/](https://kareem411.github.io/TriCache/)**  
+> 📦 **npm Package**: **[`npm install tricache`](https://www.npmjs.com/package/tricache)**
 
 **TriCache** is an enterprise three-tier caching engine for Node.js: **L1 RAM** $\rightarrow$ **L1.5 Off-Heap `/dev/shm`** $\rightarrow$ **L2 Redis/Valkey**. Warm in-memory reads run at **2.81 million ops/sec (356 ns/op)**. By absorbing 95%+ of queries locally in zero-GC POSIX shared memory with Singleflight stampede coalescing, TriCache slashes cloud Redis bills and latency without risking stale data.
 
@@ -117,9 +121,10 @@ const cache = CacheService.preset('enterprise-hardened', { redisHost: 'redis.int
 | **NestJS Module** | `tricache/nestjs` | Official `TriCacheModule.register()`, `@nestjs/cache-manager` store adapter, and `@Cacheable`. |
 | **Prisma ORM** | `tricache/prisma` | `$extends` client extension with query hashing and auto-mutation tag eviction. |
 | **Drizzle ORM** | `tricache/drizzle` | `withCache(query, opts)` query wrapper with SQL+parameters hashing and background SWR. |
-| **Express & Hono** | `tricache/http` | HTTP route caching middleware with weak ETag and `304 Not Modified` short-circuiting. |
-| **Edge Isolates** | `tricache/edge` | Zero-Node-dependency implementation for Cloudflare Workers, Fastly Compute, and Vercel Edge. |
+| **Express & Fastify** | `tricache/http` | Route caching middleware with deterministic query sorting, weak ETag, and `304 Not Modified`. |
+| **Hono & Edge Isolates** | `tricache/edge` | Zero-Node-dependency implementation for Cloudflare Workers, Fastly Compute, Hono, and Vercel Edge. |
 | **SSE Dashboard** | `tricache/dashboard` | Zero-dependency Server-Sent Events real-time admin dashboard. |
+| **Live CLI Top** | `npx tricache top` | Real-time terminal ASCII monitor over Unix sockets and Windows named pipes. |
 
 ---
 
