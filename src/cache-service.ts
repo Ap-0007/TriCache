@@ -2043,7 +2043,7 @@ export class CacheService {
       }
 
       const ageMs = Math.max(0, now - writtenAt);
-      if (ageMs > maxAgeMs) {
+      if (maxAgeMs <= 0 || ageMs > maxAgeMs) {
         this.counters.remoteSnapshotErrors++;
         this.logger.warn('Remote snapshot rejected: too old', { ageMinutes: Math.round(ageMs / 60000) });
         return 0;
