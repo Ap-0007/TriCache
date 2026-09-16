@@ -5,3 +5,4 @@ allowBuilds:
 overrides:
   vite: '^8.2.2'
   esbuild: '^0.28.1'
+  '@xmldom/xmldom': '>=0.9.12'

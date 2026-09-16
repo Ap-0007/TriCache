@@ -357,9 +357,14 @@ describe('Milestone 1: Fleet Chaos Engineering & Resilience', () => {
     it('abruptly terminates active sockets on resetAllConnections (TCP RST)', async () => {
       const client = net.createConnection(proxyPort, '127.0.0.1');
       await new Promise<void>((res) => client.once('connect', res));
+      client.resume();
+
+      // Ensure server connection event has fired and registered in activeSockets
+      await new Promise((res) => setTimeout(res, 50));
 
       const closePromise = new Promise<void>((res) => {
         client.on('close', () => res());
+        client.on('end', () => { client.destroy(); res(); });
         client.on('error', () => { /* expected on RST */ res(); });
       });
 
