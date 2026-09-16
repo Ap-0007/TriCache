@@ -130,8 +130,6 @@ export class TriCacheHandler {
           return undefined;
         }
       }
-        }
-      }
     }
 
     let val = stored.data;
