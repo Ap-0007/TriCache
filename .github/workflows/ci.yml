@@ -144,7 +144,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
           cache: pnpm
 
       - name: Install dependencies
@@ -156,29 +155,15 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Authenticate with npm registry
-        run: |
-          pnpm config set //registry.npmjs.org/:_authToken "${NODE_AUTH_TOKEN}"
-          echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Verify npm credentials
-        run: pnpm whoami --registry https://registry.npmjs.org/
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish to npm
-        run: pnpm publish --access public --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish to npm with provenance
+        run: pnpm publish --access public --provenance --no-git-checks
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${{ github.ref_name }}"
-          gh release create "$VERSION" \
+          gh release view "$VERSION" >/dev/null 2>&1 || gh release create "$VERSION" \
             --title "$VERSION" \
             --generate-notes \
             --verify-tag
