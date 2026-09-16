@@ -717,6 +717,18 @@ export interface CacheOptions {
   metricsIntervalMs?: number;
 
   /**
+   * Enable local IPC telemetry server (Unix domain socket on POSIX, Windows Named Pipe on win32)
+   * allowing external monitors like `tricache top` to inspect this instance.
+   * Default: `false`.
+   */
+  enableIpc?: boolean;
+  /**
+   * Custom socket path or Windows named pipe path for the IPC telemetry server.
+   * Default: `/tmp/tricache-<pid>.sock` (POSIX) or `\\.\pipe\tricache-<pid>` (Windows).
+   */
+  ipcSocketPath?: string;
+
+  /**
    * OpenTelemetry-compatible tracer. When provided, `get()`, `set()`, and
    * `delete()` are each wrapped in a span with attributes:
    * - `cache.hit`         — `'l1' | 'disk' | 'l2' | 'miss'`

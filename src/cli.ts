@@ -2,6 +2,7 @@
  * TriCache CLI — Developer & Troubleshooting Inspector
  *
  * Usage:
+ *   npx tricache top [--socket <path>] [--pid <pid>] [--interval <ms>] [--once]
  *   npx tricache inspect [--redis redis://localhost:6379] [--namespace <ns>]
  *   npx tricache ping [--redis redis://localhost:6379]
  *   npx tricache clear [--redis redis://localhost:6379] [--namespace <ns>] [--prefix <prefix>]
@@ -9,6 +10,12 @@
 
 import { parseArgs } from 'node:util';
 import { CacheService } from './cache-service.js';
+import {
+  IpcTelemetryClient,
+  resolveIpcSocketPath,
+  findActiveSockets,
+  renderTopDashboard,
+} from './ipc-telemetry.js';
 
 export async function runCli(args: string[] = process.argv.slice(2)): Promise<void> {
   const options = {
@@ -17,6 +24,11 @@ export async function runCli(args: string[] = process.argv.slice(2)): Promise<vo
     namespace: { type: 'string' as const, short: 'n' },
     prefix: { type: 'string' as const },
     disk: { type: 'string' as const, short: 'd' },
+    pid: { type: 'string' as const },
+    socket: { type: 'string' as const, short: 's' },
+    interval: { type: 'string' as const, short: 'i' },
+    once: { type: 'boolean' as const },
+    json: { type: 'boolean' as const },
     help: { type: 'boolean' as const, short: 'h' },
     version: { type: 'boolean' as const, short: 'v' },
   };
@@ -48,6 +60,103 @@ export async function runCli(args: string[] = process.argv.slice(2)): Promise<vo
   // to support UNIX pipes, terminal formatting, and automated tooling.
   if (values.version || command === 'version') {
     console.log('tricache v0.8.0');
+    return;
+  }
+
+  // Handle 'top' monitor command directly without constructing a local CacheService
+  if (command === 'top') {
+    let targetSocket = typeof values.socket === 'string' ? values.socket : undefined;
+    if (!targetSocket && typeof values.pid === 'string') {
+      targetSocket = resolveIpcSocketPath(values.pid);
+    }
+    if (!targetSocket) {
+      const active = await findActiveSockets();
+      if (active.length > 0) {
+        targetSocket = active[0];
+      } else {
+        targetSocket = resolveIpcSocketPath(process.pid);
+      }
+    }
+
+    const client = new IpcTelemetryClient(targetSocket);
+    const intervalMs = typeof values.interval === 'string'
+      ? Math.max(200, parseInt(values.interval, 10))
+      : 1000;
+    const isOnce = Boolean(values.once || !process.stdout.isTTY);
+    const asJson = Boolean(values.json);
+
+    if (isOnce) {
+      try {
+        const payload = await client.getMetrics();
+        if (asJson) {
+          console.log(JSON.stringify(payload, null, 2));
+        } else {
+          console.log(renderTopDashboard(payload));
+        }
+        return;
+      } catch (err) {
+        console.error(`Failed to connect to TriCache IPC at ${targetSocket}: ${(err as Error).message}`);
+        process.exit(1);
+      }
+    }
+
+    // Interactive TTY mode: switch to alternate screen buffer and hide cursor
+    process.stdout.write('\x1b[?1049h\x1b[?25l');
+
+    let activeInterval: NodeJS.Timeout | null = null;
+    let cleaningUp = false;
+
+    const cleanup = () => {
+      if (cleaningUp) return;
+      cleaningUp = true;
+      if (activeInterval) clearInterval(activeInterval);
+      if (process.stdout.isTTY) {
+        process.stdout.write('\x1b[?25h\x1b[?1049l');
+      }
+      if (process.stdin.isTTY && typeof process.stdin.setRawMode === 'function') {
+        try {
+          process.stdin.setRawMode(false);
+          process.stdin.pause();
+        } catch {
+          // Ignore TTY reset errors
+        }
+      }
+      process.exit(0);
+    };
+
+    process.once('SIGINT', cleanup);
+    process.once('SIGTERM', cleanup);
+
+    if (process.stdin.isTTY && typeof process.stdin.setRawMode === 'function') {
+      try {
+        process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.setEncoding('utf8');
+        process.stdin.on('data', (key: string) => {
+          if (key === 'q' || key === 'Q' || key === '\u0003') {
+            cleanup();
+          }
+        });
+      } catch {
+        // Raw mode not supported
+      }
+    }
+
+    const tick = async () => {
+      try {
+        const payload = await client.getMetrics();
+        const screen = renderTopDashboard(payload);
+        process.stdout.write('\x1b[H' + screen + '\n  Press "q" or Ctrl+C to exit\n');
+      } catch (err) {
+        process.stdout.write(`\x1b[HConnecting to ${targetSocket}...\nError: ${(err as Error).message}\n`);
+      }
+    };
+
+    await tick();
+    activeInterval = setInterval(tick, intervalMs);
+
+    // Keep process alive in interactive loop until exit
+    await new Promise<void>(() => {});
     return;
   }
 
@@ -130,15 +239,21 @@ Usage:
   tricache <command> [options]
 
 Commands:
+  top        Live ASCII terminal dashboard monitoring an active TriCache process
   inspect    Display full dashboard including hit ratios, latencies, and hot keys (default)
   ping       Measure response latency across L1 (RAM), L1.5 (Disk), and L2 (Redis)
   clear      Flush all entries or keys matching a prefix
 
 Options:
+  -s, --socket <path>      IPC socket path or Windows named pipe
+      --pid <pid>          Process ID of the target TriCache process to monitor
+  -i, --interval <ms>      Refresh interval in milliseconds for top (default: 1000)
+      --once               Output single snapshot and exit (non-interactive)
+      --json               Format output as raw JSON
   -r, --redis <host|url>   Redis connection host or URL (e.g. localhost, redis://127.0.0.1:6379)
   -p, --port <port>        Redis port (default: 6379)
   -n, --namespace <ns>     Cache namespace
-  --prefix <prefix>        Key prefix filter for clear command
+      --prefix <prefix>    Key prefix filter for clear command
   -d, --disk <path>        Custom disk cache directory path
   -h, --help               Show this help message
   -v, --version            Display version number

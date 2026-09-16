@@ -132,3 +132,18 @@ export {
   type DashboardPeerInstance,
   type DashboardActionEvent,
 } from './dashboard/index';
+
+export {
+  IpcTelemetryServer,
+  IpcTelemetryClient,
+  resolveIpcSocketPath,
+  findActiveSockets,
+  renderTopDashboard,
+  renderProgressBar,
+  formatBytes,
+  formatDuration,
+  formatNumber,
+  type IpcMetricsPayload,
+  type IIpcCacheProvider,
+} from './ipc-telemetry';
+

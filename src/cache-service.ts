@@ -56,6 +56,7 @@ import { DiskTier, resolveDefaultDiskDir } from './disk-tier';
 import { TierLatencyWatchdog } from './latency-watchdog';
 import { resolveAutonomousL1MaxBytes } from './utils/cgroup';
 import { AutoPipeliner } from './adapters/auto-pipeliner';
+import { IpcTelemetryServer } from './ipc-telemetry.js';
 import {
   compressBuffer,
   decompressBuffer,
@@ -528,6 +529,8 @@ export class CacheService {
     failReadinessOnDegraded?: boolean;
     autoPipeline: boolean;
     maxPipelineBatchSize: number;
+    enableIpc: boolean;
+    ipcSocketPath?: string;
   };
   /** Pre-computed once — opts.namespace never changes after construction. */
   private readonly _namespace:      string;
@@ -570,6 +573,7 @@ export class CacheService {
   private streamClient:        AnyRedisClient | null = null;
   private _lastStreamId = '$';
   private _destroyed = false;
+  private _ipcServer?: IpcTelemetryServer;
   /** Timestamp (Date.now()) when the backplane subscriber last lost its connection. */
   private _subDisconnectedAt:  number | null = null;
   /** Deduplication ring buffer for incoming and outgoing cross-region invalidations (loop prevention) */
@@ -737,6 +741,8 @@ export class CacheService {
       failReadinessOnDegraded:  options.failReadinessOnDegraded ?? false,
       autoPipeline:             options.autoPipeline ?? false,
       maxPipelineBatchSize:     options.maxPipelineBatchSize ?? 100,
+      enableIpc:                options.enableIpc ?? false,
+      ipcSocketPath:            options.ipcSocketPath,
     };
 
     this.codec = new CacheCodec({
@@ -959,6 +965,14 @@ export class CacheService {
           }
           return ok;
         },
+      });
+    }
+
+    // Local IPC telemetry server (Unix domain socket or Windows named pipe)
+    if (this.opts.enableIpc) {
+      this._ipcServer = new IpcTelemetryServer(this, this.opts.ipcSocketPath);
+      this._ipcServer.start().catch((err) => {
+        this.logger.warn('Failed to start IPC telemetry server', { error: (err as Error).message });
       });
     }
   }
@@ -4193,7 +4207,18 @@ export class CacheService {
       }
       this.redis = null;
     }
+    if (this._ipcServer) {
+      await this._ipcServer.close();
+      this._ipcServer = undefined;
+    }
     if (!this._diskDisabled) this.disk.close();
+  }
+
+  /**
+   * Return the active IPC telemetry server instance, if enabled.
+   */
+  getIpcServer(): IpcTelemetryServer | undefined {
+    return this._ipcServer;
   }
 
   /**
