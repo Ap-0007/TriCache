@@ -26,3 +26,12 @@ export type {
   EdgeExportSnapshotOptions,
   EdgeSnapshotPayload,
 } from './types';
+
+export {
+  honoEdgeCache,
+  computeEdgeETag,
+  buildEdgeDeterministicKey,
+  type HonoEdgeCacheOptions,
+  type CachedEdgeHttpResponse,
+} from './hono';
+
