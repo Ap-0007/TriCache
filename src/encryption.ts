@@ -33,7 +33,17 @@
  *   TRIC1XOR | key⊕data[N]               ← XOR
  */
 
-import { createCipheriv, createDecipheriv, createSecretKey, randomFillSync, type KeyObject } from 'crypto';
+import {
+  createCipheriv,
+  createDecipheriv,
+  createSecretKey,
+  randomFillSync,
+  constants,
+  publicEncrypt,
+  privateDecrypt,
+  randomBytes,
+  type KeyObject,
+} from 'crypto';
 import { type ILogger, consoleLogger } from './types';
 
 // ── Public type ───────────────────────────────────────────────────────────────
@@ -509,5 +519,117 @@ export class CacheEncryption {
     const plain = d.update(ct);  // GCM: final() emits no bytes
     d.final();                   // verifies auth tag — throws on tamper
     return plain;
+  }
+}
+
+// ── Envelope Encryption (Asymmetric RSA-OAEP / KMS) ───────────────────────────
+
+/** "TRICENV1" — Asymmetric Envelope Encrypted blob */
+export const MAGIC_ENVELOPE = Buffer.from([0x54, 0x52, 0x49, 0x43, 0x45, 0x4e, 0x56, 0x31]);
+
+export interface EnvelopeEncryptionOptions {
+  /** RSA public key (PEM string, KeyObject, or Buffer) for encrypting ephemeral snapshot DEKs via RSA-OAEP (SHA-256) */
+  publicKey?: string | KeyObject | Buffer;
+  /** RSA private key (PEM string, KeyObject, or Buffer) for decrypting ephemeral snapshot DEKs via RSA-OAEP (SHA-256) */
+  privateKey?: string | KeyObject | Buffer;
+  /** Optional custom KMS encrypt hook for cloud HSM / KMS integration */
+  kmsEncrypt?: (dek: Buffer) => Promise<Buffer> | Buffer;
+  /** Optional custom KMS decrypt hook for cloud HSM / KMS integration */
+  kmsDecrypt?: (encryptedDek: Buffer) => Promise<Buffer> | Buffer;
+}
+
+/**
+ * EnvelopeEncryption — Asymmetric envelope encryption for remote snapshots and cold backups.
+ *
+ * Encrypts payload with an ephemeral 256-bit AES-GCM data encryption key (DEK),
+ * then wraps the DEK using asymmetric RSA-OAEP (SHA-256) or a custom KMS hook.
+ *
+ * Storage format:
+ *   [MAGIC "TRICENV1" (8B)] | [keyLen (4B BE)] | [encryptedDEK (N bytes)] | [iv (12B)] | [tag (16B)] | [ciphertext (M bytes)]
+ */
+export class EnvelopeEncryption {
+  static isEnvelope(data: Buffer): boolean {
+    return data.length >= MAGIC_LEN && data.subarray(0, MAGIC_LEN).equals(MAGIC_ENVELOPE);
+  }
+
+  static async encrypt(data: Buffer, options: EnvelopeEncryptionOptions): Promise<Buffer> {
+    const dek = randomBytes(32);
+    let encryptedKey: Buffer;
+
+    if (options.kmsEncrypt) {
+      encryptedKey = await options.kmsEncrypt(dek);
+    } else if (options.publicKey) {
+      encryptedKey = publicEncrypt(
+        {
+          key: options.publicKey as any,
+          padding: constants.RSA_PKCS1_OAEP_PADDING,
+          oaepHash: 'sha256',
+        },
+        dek,
+      );
+    } else {
+      throw new Error('EnvelopeEncryption: either publicKey or kmsEncrypt must be provided to encrypt');
+    }
+
+    const iv = randomBytes(IV_BYTES);
+    const cipher = createCipheriv('aes-256-gcm', dek, iv);
+    const ct = cipher.update(data);
+    cipher.final();
+    const tag = cipher.getAuthTag();
+
+    const keyLen = encryptedKey.length;
+    const out = Buffer.allocUnsafe(MAGIC_LEN + 4 + keyLen + IV_BYTES + TAG_BYTES + ct.length);
+
+    MAGIC_ENVELOPE.copy(out, 0);
+    out.writeUInt32BE(keyLen, MAGIC_LEN);
+    encryptedKey.copy(out, MAGIC_LEN + 4);
+    iv.copy(out, MAGIC_LEN + 4 + keyLen);
+    tag.copy(out, MAGIC_LEN + 4 + keyLen + IV_BYTES);
+    ct.copy(out, MAGIC_LEN + 4 + keyLen + IV_BYTES + TAG_BYTES);
+
+    return out;
+  }
+
+  static async decrypt(data: Buffer, options: EnvelopeEncryptionOptions): Promise<Buffer> {
+    if (!this.isEnvelope(data)) {
+      throw new Error('EnvelopeEncryption: invalid header, expected TRICENV1');
+    }
+
+    if (data.length < MAGIC_LEN + 4 + IV_BYTES + TAG_BYTES) {
+      throw new Error('EnvelopeEncryption: truncated envelope buffer');
+    }
+
+    const keyLen = data.readUInt32BE(MAGIC_LEN);
+    const minExpected = MAGIC_LEN + 4 + keyLen + IV_BYTES + TAG_BYTES;
+    if (data.length < minExpected) {
+      throw new Error('EnvelopeEncryption: truncated envelope buffer (key length mismatch)');
+    }
+
+    const encryptedKey = data.subarray(MAGIC_LEN + 4, MAGIC_LEN + 4 + keyLen);
+    const iv = data.subarray(MAGIC_LEN + 4 + keyLen, MAGIC_LEN + 4 + keyLen + IV_BYTES);
+    const tag = data.subarray(MAGIC_LEN + 4 + keyLen + IV_BYTES, MAGIC_LEN + 4 + keyLen + IV_BYTES + TAG_BYTES);
+    const ct = data.subarray(MAGIC_LEN + 4 + keyLen + IV_BYTES + TAG_BYTES);
+
+    let dek: Buffer;
+    if (options.kmsDecrypt) {
+      dek = await options.kmsDecrypt(encryptedKey);
+    } else if (options.privateKey) {
+      dek = privateDecrypt(
+        {
+          key: options.privateKey as any,
+          padding: constants.RSA_PKCS1_OAEP_PADDING,
+          oaepHash: 'sha256',
+        },
+        encryptedKey,
+      );
+    } else {
+      throw new Error('EnvelopeEncryption: either privateKey or kmsDecrypt must be provided to decrypt');
+    }
+
+    const decipher = createDecipheriv('aes-256-gcm', dek, iv);
+    decipher.setAuthTag(tag);
+    const pt = decipher.update(ct);
+    decipher.final();
+    return pt;
   }
 }

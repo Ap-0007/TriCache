@@ -18,7 +18,12 @@
  */
 
 export { CacheService, ProcessTerminationBus, deepMergeOptions } from './cache-service';
-export { CacheEncryption, type EncryptionMode } from './encryption';
+export {
+  CacheEncryption,
+  EnvelopeEncryption,
+  type EncryptionMode,
+  type EnvelopeEncryptionOptions,
+} from './encryption';
 export { SmartMemoryCache }    from './smart-memory-cache';
 export {
   WTinyLfuCache,
@@ -65,6 +70,20 @@ export {
   type IRedisDriver,
   type IRedisPipeline,
 } from './adapters/node-redis';
+
+export {
+  AutoPipeliner,
+  type AutoPipelinerOptions,
+} from './adapters/auto-pipeliner';
+
+export {
+  resolveAutonomousL1MaxBytes,
+  readCgroupMemoryLimit,
+  getV8HeapLimit,
+  type AutonomousL1Options,
+  DEFAULT_AUTONOMOUS_L1_CEILING_BYTES,
+  MIN_AUTONOMOUS_L1_FLOOR_BYTES,
+} from './utils/cgroup';
 
 export {
   Murmur3BloomFilter,

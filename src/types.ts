@@ -282,6 +282,13 @@ export interface CacheMetrics {
     errors: number;
   };
 
+  /** Auto-pipelining statistics — present when autoPipeline is enabled */
+  pipelining?: {
+    batchesDispatched: number;
+    operationsBatched: number;
+    pendingQueueSize: number;
+  };
+
   l1:   { entries: number; sizeBytes: number; maxBytes: number };
   disk: {
     files: number;
@@ -466,6 +473,17 @@ export interface CacheOptions {
    * Default: 2500 ms
    */
   redisCommandTimeoutMs?: number;
+  /**
+   * Coalesce Redis operations executed within the identical synchronous tick into a single pipeline round-trip via queueMicrotask.
+   * Eliminates syscall and network overhead under heavy concurrent traffic with 0ms event-loop delay.
+   * Default: false
+   */
+  autoPipeline?: boolean;
+  /**
+   * Maximum batch size for auto-pipelined Redis requests before forcing an immediate dispatch.
+   * Default: 100
+   */
+  maxPipelineBatchSize?: number;
   /**
    * Clock skew tolerance window in milliseconds across cluster nodes / containers.
    * Allows timestamps within this tolerance ahead of the local clock to prevent premature eviction anomalies.

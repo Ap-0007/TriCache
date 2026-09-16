@@ -18,6 +18,8 @@ export interface IRemoteSnapshotAdapter {
   put(data: Buffer): Promise<void>;
 }
 
+import type { EnvelopeEncryptionOptions } from './encryption';
+
 export interface RemoteSnapshotOptions {
   /**
    * Remote storage adapter implementation.
@@ -43,6 +45,12 @@ export interface RemoteSnapshotOptions {
    * Default: undefined (disabled).
    */
   intervalMs?: number;
+
+  /**
+   * Optional asymmetric envelope encryption configuration.
+   * When configured, snapshot payloads are encrypted with an ephemeral AES-256 DEK wrapped by RSA-OAEP or KMS.
+   */
+  envelope?: EnvelopeEncryptionOptions;
 }
 
 export interface HttpSnapshotAdapterOptions {

@@ -50,10 +50,12 @@ import {
   CachePresetType,
   CacheHealthStatus,
 } from './types';
-import { CacheEncryption, type EncryptionMode } from './encryption';
+import { CacheEncryption, EnvelopeEncryption, type EncryptionMode } from './encryption';
 import { SmartMemoryCache }  from './smart-memory-cache';
 import { DiskTier, resolveDefaultDiskDir } from './disk-tier';
 import { TierLatencyWatchdog } from './latency-watchdog';
+import { resolveAutonomousL1MaxBytes } from './utils/cgroup';
+import { AutoPipeliner } from './adapters/auto-pipeliner';
 import {
   compressBuffer,
   decompressBuffer,
@@ -524,12 +526,15 @@ export class CacheService {
     diskLatencyBypassMinMs?: number;
     diskLatencyBypassCooldownMs?: number;
     failReadinessOnDegraded?: boolean;
+    autoPipeline: boolean;
+    maxPipelineBatchSize: number;
   };
   /** Pre-computed once — opts.namespace never changes after construction. */
   private readonly _namespace:      string;
   /** Pre-computed once — disableRedis and redisHost never change after construction. */
   private readonly _redisDisabled:  boolean;
   private readonly watchdog:        TierLatencyWatchdog;
+  private pipeliner:                AutoPipeliner | null = null;
   private readonly inflight    = new Map<string, Promise<unknown>>();
   private readonly revalidating = new Set<string>();
   private readonly _l1Counters = new Map<string, { value: number; expiresAt: number }>();
@@ -639,7 +644,7 @@ export class CacheService {
     this.opts = {
       namespace:                ns,
       logger,
-      l1MaxBytes:               options.l1MaxBytes   ?? 200 * 1024 * 1024,
+      l1MaxBytes:               options.l1MaxBytes   ?? resolveAutonomousL1MaxBytes(),
       l1MaxEntries:             options.l1MaxEntries ?? 2_000,
       categoryLimits:           { ...DEFAULT_CATEGORY_LIMITS, ...options.categoryLimits },
       forbiddenSnapshotPrefixes: forbiddenPrefixes,
@@ -730,6 +735,8 @@ export class CacheService {
       diskLatencyBypassMinMs:   options.diskLatencyBypassMinMs ?? 10,
       diskLatencyBypassCooldownMs: options.diskLatencyBypassCooldownMs ?? 30_000,
       failReadinessOnDegraded:  options.failReadinessOnDegraded ?? false,
+      autoPipeline:             options.autoPipeline ?? false,
+      maxPipelineBatchSize:     options.maxPipelineBatchSize ?? 100,
     };
 
     this.codec = new CacheCodec({
@@ -1137,7 +1144,7 @@ export class CacheService {
   }
 
   /** Derive the globalThis key for a given set of options. */
-  private static globalKey(options?: CacheOptions): string {
+  private static globalKey(options?: { namespace?: string }): string {
     const ns = options?.namespace?.trim() ?? '';
     return ns ? `__tricache_${ns}__` : GLOBAL_KEY;
   }
@@ -1766,6 +1773,10 @@ export class CacheService {
       }
       this.cb.onSuccess();
       this.redis = client;
+      this.pipeliner = new AutoPipeliner(client, {
+        enabled: this.opts.autoPipeline,
+        maxBatchSize: this.opts.maxPipelineBatchSize,
+      });
       return client;
     }
 
@@ -1851,6 +1862,10 @@ export class CacheService {
 
         this.cb.onSuccess();
         this.redis = client;
+        this.pipeliner = new AutoPipeliner(client, {
+          enabled: this.opts.autoPipeline,
+          maxBatchSize: this.opts.maxPipelineBatchSize,
+        });
         this.redisConnecting = null;
         return client;
       } catch (err) {
@@ -1976,7 +1991,12 @@ export class CacheService {
 
       const payload = { version: SNAPSHOT_VERSION, writtenAt: Date.now(), entries };
       const packed  = this.codec.encode(payload);
-      const final   = this.enc.isEnabled ? this.enc.encryptBuffer(packed) : packed;
+      let final: Buffer;
+      if (this.opts.remoteSnapshot.envelope) {
+        final = await EnvelopeEncryption.encrypt(packed, this.opts.remoteSnapshot.envelope);
+      } else {
+        final = this.enc.isEnabled ? this.enc.encryptBuffer(packed) : packed;
+      }
 
       await this.opts.remoteSnapshot.adapter.put(final);
       this.counters.remoteSnapshotUploads++;
@@ -1984,7 +2004,7 @@ export class CacheService {
       this.logger.info('Remote cache snapshot uploaded', {
         entries:   entries.length,
         sizeKB:    Math.round(final.length / 1024),
-        encrypted: this.enc.isEnabled,
+        encrypted: Boolean(this.opts.remoteSnapshot.envelope || this.enc.isEnabled),
       });
       return true;
     } catch (err) {
@@ -2012,7 +2032,14 @@ export class CacheService {
       const rawBuf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
       let buf: Buffer;
       try {
-        buf = this.enc.decryptBuffer(rawBuf);
+        if (EnvelopeEncryption.isEnvelope(rawBuf)) {
+          if (!this.opts.remoteSnapshot.envelope) {
+            throw new Error('Remote snapshot is envelope-encrypted but no envelope options (privateKey or kmsDecrypt) were configured');
+          }
+          buf = await EnvelopeEncryption.decrypt(rawBuf, this.opts.remoteSnapshot.envelope);
+        } else {
+          buf = this.enc.decryptBuffer(rawBuf);
+        }
       } catch (e) {
         this.counters.remoteSnapshotErrors++;
         this.logger.warn('Remote snapshot rejected: decryption failed', { error: (e as Error).message });
@@ -2311,7 +2338,9 @@ export class CacheService {
                 }
               }
             } else {
-              const raw = await client.get(k);
+              const raw = (this.opts.autoPipeline && this.pipeliner)
+                ? await this.pipeliner.get(k)
+                : await client.get(k);
               const redisElapsed = performance.now() - redisStart;
               this.watchdog.recordRedis(redisElapsed);
               this.cb.onSuccess();
@@ -2644,7 +2673,11 @@ export class CacheService {
             tx.expire(k, ttlSec);
             await tx.exec();
           } else {
-            await client.setex(k, ttlSec, stored);
+            if (this.opts.autoPipeline && this.pipeliner) {
+              await this.pipeliner.setex(k, ttlSec, stored);
+            } else {
+              await client.setex(k, ttlSec, stored);
+            }
           }
           this.cb.onSuccess();
         } catch (err) {
@@ -2728,7 +2761,11 @@ export class CacheService {
             const keys = await this._scanKeys(client, k);
             if (keys.length > 0) await client.del(...keys);
           } else {
-            await client.del(k);
+            if (this.opts.autoPipeline && this.pipeliner) {
+              await this.pipeliner.del(k);
+            } else {
+              await client.del(k);
+            }
           }
           this.cb.onSuccess();
         } catch (err) {
@@ -4007,7 +4044,15 @@ export class CacheService {
           ),
         },
       }),
+      ...(this.pipeliner && {
+        pipelining: this.pipeliner.stats,
+      }),
     };
+  }
+
+  /** Return auto-pipelining metrics, or null if pipelining is disabled. */
+  getPipelinerStats() {
+    return this.pipeliner ? this.pipeliner.stats : null;
   }
 
   /**
@@ -4113,6 +4158,11 @@ export class CacheService {
   /** Close Redis connections and stop all background timers. */
   async destroy(): Promise<void> {
     this._destroyed = true;
+    const g = globalThis as Record<string, unknown>;
+    const key = CacheService.globalKey(this.opts);
+    if (g[key] === this) {
+      delete g[key];
+    }
     if (this.cleanupInterval)        clearInterval(this.cleanupInterval);
     if (this.diskJanitorInterval)     clearInterval(this.diskJanitorInterval);
     if (this.oomInterval)             clearInterval(this.oomInterval);

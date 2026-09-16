@@ -337,15 +337,30 @@ export class DiskTier {
         PRAGMA synchronous  = NORMAL;
         PRAGMA temp_store   = MEMORY;
         CREATE TABLE IF NOT EXISTS meta (
-          key_hash   TEXT    PRIMARY KEY,
-          file_path  TEXT    NOT NULL,
-          expires_at INTEGER NOT NULL,
-          size       INTEGER NOT NULL DEFAULT 0
+          key_hash         TEXT    PRIMARY KEY,
+          file_path        TEXT    NOT NULL,
+          expires_at       INTEGER NOT NULL,
+          size             INTEGER NOT NULL DEFAULT 0,
+          priority         INTEGER NOT NULL DEFAULT 2,
+          last_accessed_at INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_expires ON meta (expires_at);
+        CREATE INDEX IF NOT EXISTS idx_priority_access ON meta (priority ASC, last_accessed_at ASC);
       `);
+
+      // Migration guards for pre-existing databases without priority or last_accessed_at columns
+      try {
+        this._db.exec('ALTER TABLE meta ADD COLUMN priority INTEGER NOT NULL DEFAULT 2;');
+      } catch { /* column already present */ }
+      try {
+        this._db.exec('ALTER TABLE meta ADD COLUMN last_accessed_at INTEGER NOT NULL DEFAULT 0;');
+      } catch { /* column already present */ }
+      try {
+        this._db.exec('CREATE INDEX IF NOT EXISTS idx_priority_access ON meta (priority ASC, last_accessed_at ASC);');
+      } catch { /* index already present */ }
+
       this._stmtInsert = this._db.prepare(
-        'INSERT OR REPLACE INTO meta (key_hash, file_path, expires_at, size) VALUES (?,?,?,?)',
+        'INSERT OR REPLACE INTO meta (key_hash, file_path, expires_at, size, priority, last_accessed_at) VALUES (?,?,?,?,?,?)',
       );
       this._stmtSelect = this._db.prepare(
         'SELECT file_path, expires_at FROM meta WHERE key_hash = ?',
@@ -359,7 +374,7 @@ export class DiskTier {
         'SELECT COUNT(*) AS cnt, COALESCE(SUM(size), 0) AS bytes FROM meta',
       );
       this._stmtPruneChunk = this._db.prepare(
-        'SELECT key_hash, file_path, size FROM meta ORDER BY expires_at ASC LIMIT 500',
+        'SELECT key_hash, file_path, size FROM meta ORDER BY priority ASC, last_accessed_at ASC LIMIT 500',
       );
       // Seed in-memory counters from the index — avoids startup walkCacheFiles().
       const row = this._stmtStats.get() as { cnt: number; bytes: number };
@@ -602,7 +617,9 @@ export class DiskTier {
         }
 
         if (this._db) {
-          this._stmtInsert!.run(hash, filePath, entry.expiresAt, final.length);
+          const priority = typeof entry.priority === 'number' ? entry.priority : 2;
+          const lastAccess = typeof entry.lastAccess === 'number' ? entry.lastAccess : Date.now();
+          this._stmtInsert!.run(hash, filePath, entry.expiresAt, final.length, priority, lastAccess);
         }
         this.opts.logger.debug('DiskTier: entry saved', { key: key.slice(0, 50), bytes: final.length });
         return true;

@@ -415,4 +415,36 @@ describe('CacheService Integration with NodeRedisAdapter', () => {
     // The external client remains open so other parts of the caller service stay healthy
     expect(mock.client.isOpen).toBe(true);
   });
+
+  it('coalesces concurrent L2 get operations when autoPipeline is enabled', async () => {
+    const pipeCache = CacheService.create({
+      namespace: `test_pipelined_${Date.now()}_${Math.random()}`,
+      redisClient: createNodeRedisAdapter(mock.client),
+      disableDisk: true,
+      autoPipeline: true,
+      invalidationBackplane: false,
+    });
+
+    const ns = (pipeCache as any).nk('');
+    mock.store.set(`${ns}item:1`, JSON.stringify('piped_val_1'));
+    mock.store.set(`${ns}item:2`, JSON.stringify('piped_val_2'));
+    mock.store.set(`${ns}item:3`, JSON.stringify('piped_val_3'));
+
+    const [res1, res2, res3] = await Promise.all([
+      pipeCache.get('item:1', async () => 'miss', 60),
+      pipeCache.get('item:2', async () => 'miss', 60),
+      pipeCache.get('item:3', async () => 'miss', 60),
+    ]);
+
+    expect(res1).toBe('piped_val_1');
+    expect(res2).toBe('piped_val_2');
+    expect(res3).toBe('piped_val_3');
+
+    const stats = pipeCache.getPipelinerStats();
+    expect(stats).not.toBeNull();
+    expect(stats?.operationsBatched).toBe(3);
+    expect(stats?.batchesDispatched).toBe(1);
+
+    await pipeCache.destroy();
+  });
 });
