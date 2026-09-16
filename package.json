@@ -14,7 +14,13 @@
     "stale-while-revalidate",
     "msgpack",
     "aes-256-gcm",
+    "envelope-encryption",
     "nextjs",
+    "express",
+    "fastify",
+    "hono",
+    "edge",
+    "cli",
     "nodejs"
   ],
   "license": "MIT",
