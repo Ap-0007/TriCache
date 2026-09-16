@@ -1,0 +1,762 @@
+/**
+ * TriCache Documentation Theme Customization
+ * Engineered & Modern typography system with Geometric Headings, 
+ * Ergonomic Monospace, and High-Performance Infrastructure Aesthetics.
+ * Linear / Vercel Style: Monochrome Hero + Ice Blue Precision Accents.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800&family=Geist+Mono:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Space+Grotesk:wght@500;600;700;800&display=swap');
+
+/* ==========================================================================
+   Global Theme Tokens & Fonts
+   ========================================================================== */
+
+:root {
+  /* Font Families */
+  --vp-font-family-base: 'Geist Sans', 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --vp-font-family-heading: 'Geist', 'Space Grotesk', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --vp-font-family-mono: 'Geist Mono', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* Code typography */
+  --vp-code-font-size: 0.875em;
+  --vp-code-line-height: 1.6;
+}
+
+/* ==========================================================================
+   Light Mode Theme Variables (Scoped to NOT dark)
+   ========================================================================== */
+
+:root:not(.dark) {
+  /* Cooled "Engineered Slate" Light Palette (Chromatic Tempering: ~215° hue, 4-6% sat) */
+  --vp-c-bg: #f6f8fa;
+  --vp-c-bg-alt: #eef2f6;
+  --vp-c-bg-elv: #ffffff;
+  --vp-c-bg-soft: #edf1f5;
+  --vp-c-bg-mute: #edf1f5;
+
+  /* Typography: deep slate-900 heading/body & cool slate-600 subheads */
+  --vp-c-text-1: #0f172a;
+  --vp-c-text-2: #475569;
+  --vp-c-text-3: #64748b;
+
+  /* Structural cold aluminum dividers & borders */
+  --vp-c-divider: #d0d7de;
+  --vp-c-gutter: #d0d7de;
+  --vp-c-border: #d0d7de;
+
+  /* Brand Colors - TriCache Modern Infrastructure Palette (Deep Navy) */
+  --vp-c-brand-1: #0f2b48;
+  --vp-c-brand-2: #1e3a8a;
+  --vp-c-brand-3: #091e33;
+  --vp-c-brand-soft: rgba(15, 43, 72, 0.06);
+
+  /* Primary Button - Grounded off-black (#09090b / bg-zinc-950) with white text */
+  --vp-button-brand-bg: #09090b;
+  --vp-button-brand-hover-bg: #1e293b;
+  --vp-button-brand-text: #ffffff;
+  --vp-button-brand-border: #09090b;
+  --vp-button-brand-hover-border: #1e293b;
+
+  /* Alt Button - Elevated pure white card against #f6f8fa canvas */
+  --vp-button-alt-bg: #ffffff;
+  --vp-button-alt-hover-bg: #f1f5f9;
+  --vp-button-alt-border: #d0d7de;
+  --vp-button-alt-hover-border: #94a3b8;
+  --vp-button-alt-text: #0f172a;
+}
+
+/* ==========================================================================
+   Dark Mode Theme Variables: Monochrome Hero + Ice Accent
+   ========================================================================== */
+
+.dark {
+  /* Carbon dark canvas */
+  --vp-c-bg: #1b1b1f !important;
+  --vp-c-bg-alt: #161618 !important;
+  --vp-c-bg-elv: #202127 !important;
+  --vp-c-bg-soft: #202127 !important;
+
+  /* Ice Blue precision accents (#7DD3FC / #38BDF8) */
+  --vp-c-brand-1: #7dd3fc;
+  --vp-c-brand-2: #38bdf8;
+  --vp-c-brand-3: #0284c7;
+  --vp-c-brand-soft: rgba(125, 211, 252, 0.12);
+
+  /* Primary CTA: Stark White (#FFFFFF) with Deep Slate text (#09090B) */
+  --vp-button-brand-bg: #ffffff;
+  --vp-button-brand-hover-bg: #f4f4f5;
+  --vp-button-brand-text: #09090b;
+  --vp-button-brand-border: #ffffff;
+  --vp-button-brand-hover-border: #f4f4f5;
+
+  /* Secondary CTAs: Translucent slate bg-zinc-900 border-zinc-800 text-zinc-300 */
+  --vp-button-alt-bg: #18181b;
+  --vp-button-alt-hover-bg: #27272a;
+  --vp-button-alt-border: #27272a;
+  --vp-button-alt-hover-border: #3f3f46;
+  --vp-button-alt-text: #d4d4d8;
+}
+
+/* ==========================================================================
+   Buttons: Kill the Pill Shape (rounded-full -> rounded-lg 8px) Everywhere
+   ========================================================================== */
+
+.VPHero .action .VPButton,
+.VPButton,
+.VPButton.medium,
+.VPButton.big,
+.VPButton.brand,
+.VPButton.alt {
+  border-radius: 8px !important; /* Crisp engineered corners (rounded-lg) across all buttons */
+  font-family: var(--vp-font-family-base) !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em !important;
+  transition: all 0.2s ease !important;
+}
+
+/* Dark Mode Primary Button: Stark White + 1px Specular Highlight */
+.dark .VPButton.brand {
+  background-color: #ffffff !important;
+  color: #09090b !important;
+  border: 1px solid #ffffff !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 1px 3px rgba(0, 0, 0, 0.4) !important;
+}
+
+.dark .VPButton.brand:hover {
+  background-color: #f4f4f5 !important;
+  color: #09090b !important;
+  border-color: #f4f4f5 !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85), 0 3px 8px rgba(0, 0, 0, 0.5) !important;
+  transform: translateY(-1px);
+}
+
+/* Dark Mode Secondary Buttons: bg-zinc-900 border-zinc-800 text-zinc-300 + 1px edge */
+.dark .VPButton.alt {
+  background-color: #18181b !important;
+  border: 1px solid #27272a !important;
+  color: #d4d4d8 !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 1px 2px rgba(0, 0, 0, 0.2) !important;
+}
+
+.dark .VPButton.alt:hover {
+  background-color: #27272a !important;
+  border-color: #3f3f46 !important;
+  color: #fafafa !important;
+  transform: translateY(-1px);
+}
+
+/* Light Mode Primary Button: Pure Black (#09090b / bg-zinc-950) for strong optical grounding */
+:root:not(.dark) .VPButton.brand {
+  background-color: #09090b !important;
+  color: #ffffff !important;
+  border: 1px solid #09090b !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 2px 4px rgba(0, 0, 0, 0.12) !important;
+}
+
+:root:not(.dark) .VPButton.brand:hover {
+  background-color: #27272a !important;
+  border-color: #27272a !important;
+  color: #ffffff !important;
+  transform: translateY(-1px);
+}
+
+/* Light Mode Secondary Button */
+:root:not(.dark) .VPButton.alt {
+  background-color: #ffffff !important;
+  border: 1px solid #d0d7de !important;
+  color: #0f172a !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04) !important;
+}
+
+:root:not(.dark) .VPButton.alt:hover {
+  background-color: #f1f5f9 !important;
+  border-color: #cbd5e1 !important;
+  color: #0f172a !important;
+  transform: translateY(-1px);
+}
+
+/* ==========================================================================
+   Hero Ambient Depth: Diffused Radial Glow (No blurry text halo)
+   ========================================================================== */
+
+.dark .VPHero {
+  position: relative;
+}
+
+.dark .VPHero::before {
+  content: '';
+  position: absolute;
+  top: -40px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(500px, 92vw);
+  height: 250px;
+  background: radial-gradient(ellipse at center, rgba(56, 189, 248, 0.11) 0%, rgba(37, 99, 235, 0.04) 50%, transparent 72%);
+  filter: blur(95px);
+  border-radius: 9999px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.VPHero .container {
+  position: relative;
+  z-index: 1;
+}
+
+/* ==========================================================================
+   Typography Roles & Rules
+   ========================================================================== */
+
+/* Headings Base */
+h1, h2, h3, h4, h5, h6,
+.vp-doc h1, .vp-doc h2, .vp-doc h3, .vp-doc h4, .vp-doc h5, .vp-doc h6,
+.VPHero .name,
+.VPFeature .title,
+.VPNavBarTitle .title {
+  font-family: var(--vp-font-family-heading);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* H1 & Hero Heading: Heavier optical weight (800), tight tracking (-0.035em), leading-[1.12] */
+h1,
+.vp-doc h1,
+.VPHero .heading .text {
+  font-family: var(--vp-font-family-heading);
+  font-weight: 800 !important;
+  letter-spacing: -0.035em !important;
+  line-height: 1.12 !important;
+}
+
+:root:not(.dark) h1,
+:root:not(.dark) .vp-doc h1,
+:root:not(.dark) .VPHero .heading .text {
+  color: #0f172a !important; /* Light mode: Deep slate-900 (13.5:1 ratio against #f6f8fa) */
+}
+
+.dark h1,
+.dark .vp-doc h1,
+.dark .VPHero .heading .text {
+  color: #ffffff !important; /* Dark mode: Pure white high-contrast */
+}
+
+/* H2: Section Titles */
+h2,
+.vp-doc h2 {
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  border-top: none;
+  padding-top: 1.5rem;
+}
+
+/* H3: Subsections */
+h3,
+.vp-doc h3 {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+/* H4-H6 */
+h4, h5, h6,
+.vp-doc h4, .vp-doc h5, .vp-doc h6 {
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+/* Body Text */
+body,
+.vp-doc p,
+.vp-doc ul,
+.vp-doc ol {
+  font-family: var(--vp-font-family-base);
+  font-size: 16px;
+  line-height: 1.68;
+  letter-spacing: -0.006em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Subhead / Tagline in Hero */
+.VPHero .tagline,
+p.hero-subhead {
+  font-family: var(--vp-font-family-base) !important;
+  line-height: 1.65 !important;
+  font-size: 1.125rem !important;
+}
+
+:root:not(.dark) .VPHero .tagline,
+:root:not(.dark) p.hero-subhead {
+  color: #475569 !important; /* Light mode: Cool slate-600 */
+}
+
+.dark .VPHero .tagline,
+.dark p.hero-subhead {
+  color: #d4d4d8 !important; /* text-zinc-300: High-contrast legible body */
+}
+
+.dark .VPHero .tagline code {
+  color: #f4f4f5 !important;
+  background-color: rgba(39, 39, 42, 0.7) !important;
+  border-color: rgba(63, 63, 70, 0.8) !important;
+}
+
+/* Hero Subhead Metric Highlight */
+.metric-highlight {
+  font-weight: 700;
+}
+
+:root:not(.dark) .metric-highlight {
+  color: #0f172a;
+}
+
+.dark .metric-highlight {
+  color: #38bdf8 !important; /* text-sky-400 */
+  font-weight: 600 !important;
+}
+
+/* ==========================================================================
+   Documentation Page Inline Code & Code Block Polish
+   ========================================================================== */
+
+/* Standard Inline Code in Doc Body - Tighter padding to fix (Uint16Array) and (>>= 1) */
+.vp-doc :not(pre) > code {
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.85em;
+  font-weight: 500;
+  padding: 0.08em 0.22em;
+  margin: 0 0.02em;
+  border-radius: 4px;
+  background-color: var(--vp-c-bg-mute);
+  border: 1px solid var(--vp-c-divider);
+  color: var(--vp-c-text-1);
+  transition: background-color 0.2s, border-color 0.2s;
+}
+
+/* Code block container refinement */
+.vp-doc div[class*='language-'] {
+  border-radius: 12px !important;
+  overflow: hidden !important;
+  position: relative !important;
+  margin: 20px 0 !important;
+}
+
+.dark .vp-doc div[class*='language-'] {
+  background-color: #0d1117 !important;
+  border: 1px solid rgba(63, 63, 70, 0.6) !important;
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.35) !important;
+}
+
+:root:not(.dark) .vp-doc div[class*='language-'] {
+  background-color: #edf1f5 !important;
+  border: 1px solid #d0d7de !important;
+  box-shadow: 0 2px 8px -2px rgba(15, 23, 42, 0.04) !important;
+}
+
+.dark .vp-doc div[class*='language-'] pre,
+.dark .vp-doc div[class*='language-'] pre code {
+  background-color: #0d1117 !important;
+}
+
+:root:not(.dark) .vp-doc div[class*='language-'] pre,
+:root:not(.dark) .vp-doc div[class*='language-'] pre code {
+  background-color: #edf1f5 !important;
+}
+
+/* Dedicated Code Header Bar (.has-title) */
+.vp-doc [class*='language-'].has-title .title {
+  display: flex !important;
+  align-items: center !important;
+  height: 36px !important;
+  padding: 0 16px !important;
+  margin: 0 !important;
+  font-family: var(--vp-font-family-mono) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  letter-spacing: -0.01em !important;
+  user-select: none !important;
+  position: relative !important;
+  z-index: 1 !important;
+}
+
+.dark .vp-doc [class*='language-'].has-title .title {
+  color: #a1a1aa !important; /* text-zinc-400 */
+  background: rgba(24, 24, 27, 0.6) !important; /* bg-zinc-900/60 */
+  border-bottom: 1px solid rgba(63, 63, 70, 0.6) !important; /* border-zinc-800 */
+}
+
+:root:not(.dark) .vp-doc [class*='language-'].has-title .title {
+  color: #475569 !important;
+  background: rgba(238, 242, 246, 0.9) !important;
+  border-bottom: 1px solid #d0d7de !important;
+}
+
+/* Top-Right Horizontal Anchor: Language Badge & Copy Button Side-by-Side */
+.vp-doc [class*='language-'] > button.copy {
+  position: absolute !important;
+  width: 28px !important;
+  height: 28px !important;
+  border-radius: 6px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  z-index: 5 !important;
+  opacity: 0.85 !important;
+  background-size: 14px 14px !important;
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+  transition: all 0.2s ease !important;
+}
+
+.vp-doc [class*='language-'] > span.lang {
+  position: absolute !important;
+  height: 28px !important;
+  line-height: 28px !important;
+  font-family: var(--vp-font-family-mono) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.06em !important;
+  user-select: none !important;
+  pointer-events: none !important;
+  z-index: 5 !important;
+  display: flex !important;
+  align-items: center !important;
+}
+
+/* Placement when code block does NOT have a title */
+.vp-doc [class*='language-']:not(.has-title) > button.copy {
+  top: 9px !important;
+  right: 12px !important;
+}
+
+.vp-doc [class*='language-']:not(.has-title) > span.lang {
+  top: 9px !important;
+  right: 48px !important;
+}
+
+/* Placement when code block HAS a title bar */
+.vp-doc [class*='language-'].has-title > button.copy {
+  top: 4px !important;
+  right: 12px !important;
+}
+
+.vp-doc [class*='language-'].has-title > span.lang {
+  top: 4px !important;
+  right: 48px !important;
+}
+
+/* Theme styling for copy button */
+.dark .vp-doc [class*='language-'] > button.copy {
+  background-color: rgba(39, 39, 42, 0.7) !important;
+  border: 1px solid rgba(63, 63, 70, 0.7) !important;
+  color: #a1a1aa !important;
+}
+
+.dark .vp-doc [class*='language-'] > button.copy:hover,
+.dark .vp-doc [class*='language-'] > button.copy:focus {
+  opacity: 1 !important;
+  background-color: #27272a !important;
+  border-color: #71717a !important;
+  color: #f4f4f5 !important;
+}
+
+:root:not(.dark) .vp-doc [class*='language-'] > button.copy {
+  background-color: #ffffff !important;
+  border: 1px solid #d0d7de !important;
+  color: #475569 !important;
+}
+
+:root:not(.dark) .vp-doc [class*='language-'] > button.copy:hover,
+:root:not(.dark) .vp-doc [class*='language-'] > button.copy:focus {
+  opacity: 1 !important;
+  background-color: #e2e8f0 !important;
+  border-color: #94a3b8 !important;
+  color: #0f172a !important;
+}
+
+/* Theme styling for language tag */
+.dark .vp-doc [class*='language-'] > span.lang {
+  color: #71717a !important; /* text-zinc-500 */
+}
+
+:root:not(.dark) .vp-doc [class*='language-'] > span.lang {
+  color: #64748b !important;
+}
+
+/* Code block pre & code body */
+.vp-doc [class*='language-'] > pre {
+  margin: 0 !important;
+  border-radius: 0 !important;
+  font-family: var(--vp-font-family-mono) !important;
+  font-size: 13.5px !important;
+  line-height: 1.65 !important;
+}
+
+.vp-doc [class*='language-']:not(.has-title) > pre {
+  padding-top: 2.85rem !important; /* Clearance below top-right horizontal toolbar */
+  padding-bottom: 1.25rem !important;
+  padding-left: 1.25rem !important;
+  padding-right: 1.25rem !important;
+}
+
+.vp-doc [class*='language-'].has-title > pre {
+  padding-top: 1.15rem !important;
+  padding-bottom: 1.25rem !important;
+  padding-left: 1.25rem !important;
+  padding-right: 1.25rem !important;
+}
+
+/* Comment Contrast: Muted warm gray (#8b949e / text-zinc-400) */
+.dark .vp-doc div[class*='language-'] pre span[style*='italic'],
+.dark .vp-doc div[class*='language-'] pre span[style*='font-style:italic'],
+.dark .vp-doc div[class*='language-'] pre span[style*='font-style: italic'],
+.dark .vp-doc div[class*='language-'] pre span[style*='51597D'],
+.dark .vp-doc div[class*='language-'] pre span[style*='51597d'],
+.dark .vp-doc div[class*='language-'] pre span[style*='565f89'],
+.dark .vp-doc div[class*='language-'] pre span.comment {
+  color: #8b949e !important;
+  --shiki-dark: #8b949e !important;
+}
+
+/* ==========================================================================
+   Logo & Brand Component Polish
+   ========================================================================== */
+
+/* Navbar Alternating Wordmark Logo (Clean, crisp, no tight fuzzy halo) */
+.VPNavBarTitle .logo {
+  height: 26px !important;
+  width: auto !important;
+  max-width: 140px !important;
+  object-fit: contain !important;
+  margin-right: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  filter: none !important; /* No 80s arcade neon halo - kept crisp and sharp */
+  transition: transform 0.2s ease !important;
+}
+
+.VPNavBarTitle:hover .logo {
+  transform: scale(1.02);
+}
+
+/* ==========================================================================
+   Feature Cards: Rounded-lg (8px) + Specular Highlight + Ice Blue Accents
+   ========================================================================== */
+
+.VPFeature {
+  border-radius: 8px !important; /* Kill the pill: crisp engineered corners */
+  border: 1px solid var(--vp-c-divider) !important;
+  transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease !important;
+}
+
+:root:not(.dark) .VPFeature {
+  background-color: #ffffff !important; /* Elevated pure white card over #f6f8fa canvas */
+  border-color: #d0d7de !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04) !important;
+}
+
+:root:not(.dark) .VPFeature:hover {
+  transform: translateY(-2px);
+  border-color: #0f2b48 !important;
+  box-shadow: 0 10px 24px -6px rgba(15, 43, 72, 0.1) !important;
+}
+
+.dark .VPFeature:hover {
+  transform: translateY(-2px);
+  border-color: var(--vp-c-brand-1) !important;
+  box-shadow: 0 12px 24px -10px rgba(0, 0, 0, 0.5);
+}
+
+/* Feature Cards Icon Framing Pattern */
+.VPFeature .icon {
+  width: 2.75rem !important;
+  height: 2.75rem !important;
+  border-radius: 8px !important; /* rounded-lg (8px) */
+  margin-bottom: 1.25rem !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  transition: all 0.25s ease !important;
+}
+
+/* 15-20% larger icon inside container */
+.VPFeature .icon svg {
+  width: 1.65rem !important;
+  height: 1.65rem !important;
+  display: block;
+}
+
+/* Light mode icon container: refined brand navy tint */
+:root:not(.dark) .VPFeature .icon {
+  background-color: rgba(15, 43, 72, 0.06) !important;
+  border: 1px solid rgba(15, 43, 72, 0.16) !important;
+  color: #0f2b48 !important;
+}
+
+:root:not(.dark) .VPFeature .icon svg path:first-child {
+  fill: #0f2b48;
+  opacity: 0.22;
+}
+
+:root:not(.dark) .VPFeature:hover .icon {
+  background-color: rgba(15, 43, 72, 0.12) !important;
+  border-color: rgba(15, 43, 72, 0.35) !important;
+  transform: scale(1.05);
+}
+
+/* Dark mode icon container: Ice Blue (#7DD3FC) at 10-15% opacity + Inner Specular Highlight */
+.dark .VPFeature .icon {
+  background-color: rgba(125, 211, 252, 0.1) !important;
+  border: 1px solid rgba(125, 211, 252, 0.2) !important;
+  color: #7dd3fc !important; /* Ice Blue */
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 1px 3px rgba(0, 0, 0, 0.25) !important;
+}
+
+.dark .VPFeature .icon svg path:first-child {
+  fill: #7dd3fc;
+  opacity: 0.22;
+}
+
+.dark .VPFeature:hover .icon {
+  background-color: rgba(125, 211, 252, 0.16) !important;
+  border-color: rgba(125, 211, 252, 0.4) !important;
+  transform: scale(1.05);
+}
+
+/* ==========================================================================
+   Documentation Diagrams & Technical Illustrations
+   ========================================================================== */
+
+.vp-doc p > img {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  margin: 1.75rem auto 1rem auto;
+  border-radius: 12px;
+  border: 1px solid var(--vp-c-divider);
+  box-shadow: 0 4px 24px -4px rgba(0, 0, 0, 0.12);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.dark .vp-doc p > img {
+  border-color: rgba(63, 63, 70, 0.6);
+  box-shadow: 0 6px 28px -4px rgba(0, 0, 0, 0.45);
+}
+
+/* VitePress Details Container for Preserved ASCII & Technical Specs */
+.vp-doc .custom-block.details {
+  margin: 1rem 0 2rem 0;
+  border-radius: 10px;
+  border: 1px solid var(--vp-c-divider);
+  background-color: var(--vp-c-bg-soft);
+  padding: 0.75rem 1.25rem;
+}
+
+.vp-doc .custom-block.details summary {
+  font-family: var(--vp-font-family-base);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--vp-c-text-2);
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.2s ease;
+}
+
+.vp-doc .custom-block.details summary:hover {
+  color: var(--vp-c-brand-1);
+}
+
+.vp-doc .custom-block.details[open] summary {
+  margin-bottom: 0.75rem;
+  color: var(--vp-c-text-1);
+}
+
+.vp-doc .custom-block.details pre {
+  margin: 0.5rem 0 0 0 !important;
+}
+
+/* ==========================================================================
+   Tame Sidebar Scrollbar: Ultra-thin, low-contrast, unobtrusive
+   ========================================================================== */
+
+.VPSidebar,
+.VPSidebar .nav,
+.VPSidebar * {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(161, 161, 170, 0.2) transparent;
+}
+
+.VPSidebar::-webkit-scrollbar,
+.VPSidebar .nav::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+.VPSidebar::-webkit-scrollbar-track,
+.VPSidebar .nav::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.VPSidebar::-webkit-scrollbar-thumb,
+.VPSidebar .nav::-webkit-scrollbar-thumb {
+  background: rgba(161, 161, 170, 0.2);
+  border-radius: 9999px;
+}
+
+.VPSidebar:hover::-webkit-scrollbar-thumb,
+.VPSidebar .nav:hover::-webkit-scrollbar-thumb {
+  background: rgba(161, 161, 170, 0.4);
+}
+
+.dark .VPSidebar,
+.dark .VPSidebar .nav,
+.dark .VPSidebar * {
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+.dark .VPSidebar::-webkit-scrollbar-thumb,
+.dark .VPSidebar .nav::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.dark .VPSidebar:hover::-webkit-scrollbar-thumb,
+.dark .VPSidebar .nav:hover::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* ==========================================================================
+   Documentation Page Vertical Spacing Optimization
+   Compacts the excessive bottom void and pagination gutters
+   ========================================================================== */
+
+.VPDocFooter {
+  margin-top: 2rem !important;
+}
+
+.VPDocFooter .prev-next {
+  padding-top: 1.25rem !important;
+}
+
+.VPDoc {
+  padding-bottom: 2rem !important;
+}
+
+@media (min-width: 48rem) {
+  .VPDoc {
+    padding-bottom: 2.25rem !important;
+  }
+}
+
+@media (min-width: 60rem) {
+  .VPDoc .content {
+    padding-bottom: 2.25rem !important;
+  }
+}
+
+.VPDoc .content-container {
+  padding-bottom: 0 !important;
+}
+
+
+
