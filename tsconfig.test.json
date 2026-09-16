@@ -4,5 +4,5 @@
     "rootDir": "./",
     "types": ["node"]
   },
-  "include": ["tests/**/*", "src/**/*"]
+  "include": ["tests/**/*", "src/**/*", "bench/**/*"]
 }

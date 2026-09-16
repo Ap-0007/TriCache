@@ -17,7 +17,7 @@
  *   await cache.delete(`user:${userId}`);
  */
 
-export { CacheService, ProcessTerminationBus } from './cache-service';
+export { CacheService, ProcessTerminationBus, deepMergeOptions } from './cache-service';
 export { CacheEncryption, type EncryptionMode } from './encryption';
 export { SmartMemoryCache }    from './smart-memory-cache';
 export {
@@ -28,7 +28,8 @@ export {
   type WTinyLfuStats,
   type EvictionResult,
 } from './wtiny-lfu';
-export { DiskTier }            from './disk-tier';
+export { DiskTier, resolveDefaultDiskDir } from './disk-tier';
+export { TierLatencyWatchdog, type LatencyWatchdogOptions, type LatencyWatchdogTelemetry } from './latency-watchdog';
 export { WasmBloomFilter }     from './wasm/bloom-filter-wasm';
 export { type CompressionAlgorithm } from './compression';
 export { CacheCodec, defaultCodec, type CacheCodecOptions } from './codec';
@@ -75,6 +76,7 @@ export {
   CachePriority,
   consoleLogger,
   type ILogger,
+  type CachePresetType,
   type CacheOptions,
   type CacheMetrics,
   type CategoryLimit,
@@ -92,6 +94,7 @@ export {
   type ICacheObservableGauge,
   type ICacheBatchObservableCallback,
   type ICacheMeter,
+  type CacheHealthStatus,
 } from './types';
 
 export {

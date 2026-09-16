@@ -189,13 +189,61 @@ interface DiskPayload {
 
 const DISK_TIER_VERSION = 1;
 
+/**
+ * Resolves the default directory for DiskTier storage.
+ *
+ * In Linux container environments, checks if `/dev/shm` (POSIX shared memory tmpfs)
+ * is writable and has adequate capacity (total >= 256MB AND free >= 128MB).
+ * When valid, targets `/dev/shm` to provide an off-heap, zero-GC RAM extension
+ * that runs at memory speeds (~20µs) and burns zero cloud/EBS IOPS.
+ * If capacity or free space is insufficient, or on non-Linux platforms,
+ * gracefully falls back to `os.tmpdir()`.
+ */
+export function resolveDefaultDiskDir(namespace?: string, logger?: ILogger): { dir: string; isShm: boolean } {
+  const ns = namespace?.trim() ?? '';
+  const nsDir = ns ? `tricache-disk-${ns}` : 'tricache-disk';
+
+  if (process.platform === 'linux') {
+    const shmPath = '/dev/shm';
+    try {
+      fs.accessSync(shmPath, fs.constants.W_OK | fs.constants.R_OK);
+      if (typeof fs.statfsSync === 'function') {
+        const stats = fs.statfsSync(shmPath);
+        const totalBytes = Number(stats.blocks) * Number(stats.bsize);
+        const freeBytes = Number(stats.bavail) * Number(stats.bsize);
+
+        if (totalBytes >= 256 * 1024 * 1024 && freeBytes >= 128 * 1024 * 1024) {
+          const targetDir = path.join(shmPath, nsDir);
+          logger?.info?.('DiskTier: Targeting Linux /dev/shm tmpfs for off-heap storage', {
+            path: targetDir,
+            totalBytes,
+            freeBytes,
+          });
+          return { dir: targetDir, isShm: true };
+        } else {
+          logger?.info?.('DiskTier: /dev/shm capacity or free space insufficient (<256MB total or <128MB free); falling back to tmpdir', {
+            totalBytes,
+            freeBytes,
+          });
+        }
+      }
+    } catch (err) {
+      logger?.debug?.('DiskTier: /dev/shm not usable, falling back to tmpdir', {
+        error: (err as Error).message,
+      });
+    }
+  }
+
+  return { dir: path.join(os.tmpdir(), nsDir), isShm: false };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface DiskTierOptions {
   dir:              string;
   maxBytes:         number;
   entryMaxBytes:    number;
-  forbiddenPrefixes: readonly string[];
+  forbiddenPrefixes?: readonly string[];
   /** Mode-aware encryption instance. When set, disk files are encrypted with the
    *  same algorithm as L2/Redis (aes-256-gcm, aes-128-gcm, aes-128-ctr, or xor).
    *  When null, files are written unencrypted. Pass `cache.encryption` here. */
@@ -222,6 +270,15 @@ export class DiskTier {
   /** Next bucket index (0–255) for the staggered janitor wheel. */
   private _nextJanitorBucket = 0;
 
+  // ── High-watermark pruning & host volume health state ─────────────────────
+  private _isPruning = false;
+  private _pruneRounds = 0;
+  private _entriesPruned = 0;
+  private _spillsShedTotal = 0;
+  private _hostVolumeLowSpace = false;
+  private _hostVolumeLowSpacePauses = 0;
+  private _writeCounter = 0;
+
   // ── SQLite metadata index (optional, requires node:sqlite) ───────────────
   private _db:         _SqliteDB   | null = null;
   private _stmtInsert: _SqliteStmt | null = null;  // INSERT OR REPLACE
@@ -230,6 +287,7 @@ export class DiskTier {
   private _stmtExpire: _SqliteStmt | null = null;  // SELECT expired rows
   private _stmtDelExp: _SqliteStmt | null = null;  // DELETE expired rows
   private _stmtStats:  _SqliteStmt | null = null;  // COUNT + SUM(size)
+  private _stmtPruneChunk: _SqliteStmt | null = null; // SELECT chunk for watermark pruning
 
   constructor(opts: DiskTierOptions) {
     this.opts  = opts;
@@ -300,6 +358,9 @@ export class DiskTier {
       this._stmtStats  = this._db.prepare(
         'SELECT COUNT(*) AS cnt, COALESCE(SUM(size), 0) AS bytes FROM meta',
       );
+      this._stmtPruneChunk = this._db.prepare(
+        'SELECT key_hash, file_path, size FROM meta ORDER BY expires_at ASC LIMIT 500',
+      );
       // Seed in-memory counters from the index — avoids startup walkCacheFiles().
       const row = this._stmtStats.get() as { cnt: number; bytes: number };
       this.fileCount      = row.cnt;
@@ -308,7 +369,7 @@ export class DiskTier {
       this.opts.logger.debug('DiskTier: SQLite index ready', { entries: row.cnt });
     } catch (err) {
       this._db = this._stmtInsert = this._stmtSelect = this._stmtDelete =
-        this._stmtExpire = this._stmtDelExp = this._stmtStats = null;
+        this._stmtExpire = this._stmtDelExp = this._stmtStats = this._stmtPruneChunk = null;
       this.opts.logger.warn('DiskTier: SQLite init failed, using file-only mode', {
         error: (err as Error).message,
       });
@@ -400,7 +461,7 @@ export class DiskTier {
   }
 
   private isForbidden(key: string): boolean {
-    return this.opts.forbiddenPrefixes.some(p => key.startsWith(p));
+    return this.opts.forbiddenPrefixes?.some(p => key.startsWith(p)) ?? false;
   }
 
   private encrypt(data: Buffer): Buffer {
@@ -460,7 +521,22 @@ export class DiskTier {
     this.ensureDir();
     if (!this.dirReady) return;
     this.ensureUsageCounted();
-    if (this.diskUsageBytes >= this.opts.maxBytes) return; // disk cap hit
+
+    // Periodic host volume check every 2000 writes
+    if (++this._writeCounter % 2000 === 0) {
+      this.checkHostVolumeHealth();
+    }
+
+    // Fast-shed incoming spills while host volume is low (<10%), pruning is active, or quota is reached
+    if (this._hostVolumeLowSpace || this._isPruning || this.diskUsageBytes >= this.opts.maxBytes) {
+      this._spillsShedTotal++;
+      return;
+    }
+
+    // High-watermark trigger (80%): fire non-blocking chunked prune down to 60%
+    if (this.diskUsageBytes >= this.opts.maxBytes * 0.80 && !this._isPruning) {
+      void this.triggerChunkedPrune();
+    }
 
     // ── Synchronous phase: pack + encrypt (CPU-only, no I/O) ─────────────
     let final: Buffer;
@@ -502,6 +578,10 @@ export class DiskTier {
     // Optimistically reserve quota before queuing so concurrent spills respect the cap
     this.diskUsageBytes += final.length;
     this.fileCount++;
+
+    if (this.diskUsageBytes >= this.opts.maxBytes * 0.80 && !this._isPruning) {
+      void this.triggerChunkedPrune();
+    }
 
     const result = await this.diskQueue.schedule(async () => {
       try {
@@ -942,7 +1022,154 @@ export class DiskTier {
     return cleared;
   }
 
-  get stats(): { files: number; sizeKB: number; maxKB: number; backpressure?: DiskBackpressureStats } {
+  /**
+   * Proactively checks host volume free space via statfsSync.
+   * If free space on the volume drops below 10%, pauses spills to prevent
+   * Kubernetes pod eviction (DiskPressure / EphemeralStorageExceeded).
+   */
+  public checkHostVolumeHealth(): boolean {
+    try {
+      if (typeof fs.statfsSync === 'function') {
+        const stats = fs.statfsSync(this.opts.dir);
+        const total = Number(stats.blocks);
+        const avail = Number(stats.bavail);
+        if (total > 0) {
+          const freeRatio = avail / total;
+          if (freeRatio < 0.10) {
+            if (!this._hostVolumeLowSpace) {
+              this._hostVolumeLowSpace = true;
+              this._hostVolumeLowSpacePauses++;
+              this.opts.logger.warn(
+                'DiskTier: host volume has <10% free space. Pausing disk cache spills to prevent Kubernetes eviction.',
+                { dir: this.opts.dir, freePct: Number((freeRatio * 100).toFixed(1)) },
+              );
+            }
+            return false;
+          } else if (this._hostVolumeLowSpace) {
+            this._hostVolumeLowSpace = false;
+            this.opts.logger.info(
+              'DiskTier: host volume space recovered (>=10% free). Resuming disk cache spills.',
+              { dir: this.opts.dir, freePct: Number((freeRatio * 100).toFixed(1)) },
+            );
+            return true;
+          }
+        }
+      }
+    } catch {
+      // statfs may fail if directory does not yet exist or is unmounted
+    }
+    return true;
+  }
+
+  /**
+   * Non-blocking chunked pruning:
+   * Evicts oldest entries in 500-entry chunks down to 60% watermark,
+   * yielding to the event loop via setImmediate between chunks.
+   */
+  public async triggerChunkedPrune(): Promise<number> {
+    if (this._isPruning) return 0;
+    this._isPruning = true;
+    this._pruneRounds++;
+    let prunedInThisRound = 0;
+
+    try {
+      this.ensureUsageCounted();
+      const targetBytes = Math.floor(this.opts.maxBytes * 0.60);
+
+      if (this._db && this._stmtPruneChunk) {
+        while (this.diskUsageBytes > targetBytes) {
+          const rows = this._stmtPruneChunk.all() as Array<{ key_hash: string; file_path: string; size: number }>;
+          if (!rows || rows.length === 0) break;
+
+          for (const row of rows) {
+            try {
+              fs.unlinkSync(row.file_path);
+            } catch { /* already gone */ }
+            this.diskUsageBytes -= Math.min(this.diskUsageBytes, row.size);
+            this.fileCount = Math.max(0, this.fileCount - 1);
+            this._entriesPruned++;
+            prunedInThisRound++;
+            try { this._stmtDelete!.run(row.key_hash); } catch { /* ok */ }
+
+            if (this.diskUsageBytes <= targetBytes) break;
+          }
+
+          if (this.diskUsageBytes > targetBytes) {
+            await new Promise<void>(resolve => setImmediate(resolve));
+          }
+        }
+      } else {
+        while (this.diskUsageBytes > targetBytes) {
+          const files = this.walkCacheFiles();
+          if (files.length === 0) break;
+          const chunk = files.slice(0, 500);
+
+          for (const filePath of chunk) {
+            try {
+              const stat = fs.statSync(filePath);
+              fs.unlinkSync(filePath);
+              this.diskUsageBytes -= Math.min(this.diskUsageBytes, stat.size);
+              this.fileCount = Math.max(0, this.fileCount - 1);
+              this._entriesPruned++;
+              prunedInThisRound++;
+            } catch { /* already gone */ }
+
+            if (this.diskUsageBytes <= targetBytes) break;
+          }
+
+          if (this.diskUsageBytes > targetBytes) {
+            await new Promise<void>(resolve => setImmediate(resolve));
+          }
+        }
+      }
+    } finally {
+      this._isPruning = false;
+    }
+
+    return prunedInThisRound;
+  }
+
+  get isPruning(): boolean {
+    return this._isPruning;
+  }
+
+  get hostVolumeLowSpace(): boolean {
+    return this._hostVolumeLowSpace;
+  }
+
+  get spillsShedTotal(): number {
+    return this._spillsShedTotal;
+  }
+
+  getPruningStats(): {
+    active: boolean;
+    pruneRounds: number;
+    entriesPruned: number;
+    spillsShedTotal: number;
+    hostVolumeLowSpacePauses: number;
+  } {
+    return {
+      active: this._isPruning,
+      pruneRounds: this._pruneRounds,
+      entriesPruned: this._entriesPruned,
+      spillsShedTotal: this._spillsShedTotal,
+      hostVolumeLowSpacePauses: this._hostVolumeLowSpacePauses,
+    };
+  }
+
+  get stats(): {
+    files: number;
+    sizeKB: number;
+    maxKB: number;
+    backpressure?: DiskBackpressureStats;
+    pruning?: {
+      active: boolean;
+      pruneRounds: number;
+      entriesPruned: number;
+      spillsShedTotal: number;
+      hostVolumeLowSpacePauses: number;
+    };
+  } {
     if (this._db) {
       // Query the index for authoritative counts — O(1) SQLite aggregate.
       const row = this._stmtStats!.get() as { cnt: number; bytes: number };
@@ -954,6 +1181,7 @@ export class DiskTier {
       sizeKB: Math.round(this.diskUsageBytes / 1024),
       maxKB: Math.round(this.opts.maxBytes / 1024),
       backpressure: this.diskQueue.getStats(),
+      pruning: this.getPruningStats(),
     };
   }
 
@@ -972,7 +1200,7 @@ export class DiskTier {
     if (this._db) {
       try { this._db.close(); } catch { /* ok */ }
       this._db = this._stmtInsert = this._stmtSelect = this._stmtDelete =
-        this._stmtExpire = this._stmtDelExp = this._stmtStats = null;
+        this._stmtExpire = this._stmtDelExp = this._stmtStats = this._stmtPruneChunk = null;
     }
   }
 }

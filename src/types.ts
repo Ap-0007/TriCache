@@ -283,7 +283,27 @@ export interface CacheMetrics {
   };
 
   l1:   { entries: number; sizeBytes: number; maxBytes: number };
-  disk: { files: number; sizeKB: number; maxKB: number; disabled: boolean };
+  disk: {
+    files: number;
+    sizeKB: number;
+    maxKB: number;
+    disabled: boolean;
+    latencyWatchdog?: {
+      bypassActive: boolean;
+      bypassStage: 0 | 1 | 2 | 3;
+      diskP95Ms: number;
+      redisP95Ms: number;
+      redisDampened: boolean;
+      bypassedTotal: number;
+    };
+    pruning?: {
+      active: boolean;
+      pruneRounds: number;
+      entriesPruned: number;
+      spillsShedTotal: number;
+      hostVolumeLowSpacePauses: number;
+    };
+  };
 
   /** Adaptive TTL statistics — present only when `adaptiveTtl` is enabled */
   adaptiveTtl?: {
@@ -299,6 +319,20 @@ export interface CacheMetrics {
   };
 }
 
+/**
+ * Result returned by cache.health()
+ *
+ * NOTE: Intended strictly for Kubernetes Readiness probes (/ready).
+ * Do NOT hook into Liveness probes (/healthz), as degraded caches should shed ingress
+ * traffic while keeping the container alive to heal local storage and drain in-flight tasks.
+ */
+export interface CacheHealthStatus {
+  healthy: boolean;
+  degraded: boolean;
+  reasons: string[];
+  details?: Record<string, unknown>;
+}
+
 // ─── Configuration ───────────────────────────────────────────────────────────
 
 /** Per-category memory limits for L1 */
@@ -306,6 +340,11 @@ export interface CategoryLimit {
   maxEntries: number;
   maxSizeBytes: number;
 }
+
+/**
+ * Supported opinionated pre-configurations for CacheService.preset()
+ */
+export type CachePresetType = 'nextjs' | 'microservice' | 'serverless' | 'enterprise-hardened';
 
 /**
  * Options accepted by CacheService.create()
@@ -383,6 +422,34 @@ export interface CacheOptions {
    * Default: 5000 ms
    */
   diskCircuitBreakerCooldownMs?: number;
+  /**
+   * Enable dynamic tier latency watchdog.
+   * Compares disk read latency against Redis and automatically sheds traffic to Redis when disk slows down.
+   * Default: true
+   */
+  diskLatencyWatchdog?: boolean;
+  /**
+   * Ratio of disk p95 latency to Redis p95 latency required to trip bypass.
+   * Default: 1.5
+   */
+  diskLatencyBypassRatio?: number;
+  /**
+   * Minimum disk p95 latency floor in ms before bypass can be considered.
+   * Default: 10 ms
+   */
+  diskLatencyBypassMinMs?: number;
+  /**
+   * Cooldown time in ms before probing canary during Stage 3 bypass.
+   * Subject to ±30% anti-synchronicity jitter.
+   * Default: 30_000 ms
+   */
+  diskLatencyBypassCooldownMs?: number;
+  /**
+   * When true, cache.health().healthy returns false when degraded, causing
+   * Kubernetes readiness probes to fail and route traffic away from this pod.
+   * Default: false (graceful local degradation without failing readiness)
+   */
+  failReadinessOnDegraded?: boolean;
 
   // ── L2 (Redis) ────────────────────────────────────────────────────────────
   /**

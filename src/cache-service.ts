@@ -47,10 +47,13 @@ import {
   ICacheCounter,
   IRedisDriver,
   WTinyLfuStats,
+  CachePresetType,
+  CacheHealthStatus,
 } from './types';
 import { CacheEncryption, type EncryptionMode } from './encryption';
 import { SmartMemoryCache }  from './smart-memory-cache';
-import { DiskTier }          from './disk-tier';
+import { DiskTier, resolveDefaultDiskDir } from './disk-tier';
+import { TierLatencyWatchdog } from './latency-watchdog';
 import {
   compressBuffer,
   decompressBuffer,
@@ -419,6 +422,31 @@ export class ProcessTerminationBus {
   }
 }
 
+// ── Deep option merger ──────────────────────────────────────────────────────
+
+function isPlainObject(item: unknown): item is Record<string, unknown> {
+  return typeof item === 'object' && item !== null && item.constructor === Object;
+}
+
+export function deepMergeOptions(base: CacheOptions, overrides?: Partial<CacheOptions>): CacheOptions {
+  if (!overrides) return { ...base };
+  const output: Record<string, unknown> = { ...base };
+
+  for (const key of Object.keys(overrides) as Array<keyof CacheOptions>) {
+    const sourceVal = overrides[key];
+    if (sourceVal === undefined) continue;
+    const targetVal = output[key as string];
+
+    if (isPlainObject(targetVal) && isPlainObject(sourceVal)) {
+      output[key as string] = deepMergeOptions(targetVal as CacheOptions, sourceVal as Partial<CacheOptions>);
+    } else {
+      output[key as string] = sourceVal;
+    }
+  }
+
+  return output as CacheOptions;
+}
+
 export class CacheService {
   private readonly logger:     ILogger;
   private readonly enc:        CacheEncryption;
@@ -491,11 +519,17 @@ export class CacheService {
     redisCommandTimeoutMs?: number;
     clockSkewToleranceMs: number;
     l1AdmissionPolicy?: 'wtinylfu' | 'adaptive';
+    diskLatencyWatchdog?: boolean;
+    diskLatencyBypassRatio?: number;
+    diskLatencyBypassMinMs?: number;
+    diskLatencyBypassCooldownMs?: number;
+    failReadinessOnDegraded?: boolean;
   };
   /** Pre-computed once — opts.namespace never changes after construction. */
   private readonly _namespace:      string;
   /** Pre-computed once — disableRedis and redisHost never change after construction. */
   private readonly _redisDisabled:  boolean;
+  private readonly watchdog:        TierLatencyWatchdog;
   private readonly inflight    = new Map<string, Promise<unknown>>();
   private readonly revalidating = new Set<string>();
   private readonly _l1Counters = new Map<string, { value: number; expiresAt: number }>();
@@ -611,8 +645,8 @@ export class CacheService {
       forbiddenSnapshotPrefixes: forbiddenPrefixes,
       // Namespace-isolated defaults: separate dir / snapshot per namespace so
       // two instances with different namespaces never share cache files.
-      diskCacheDir:             options.diskCacheDir ?? path.join(
-        os.tmpdir(), ns ? `tricache-disk-${ns}` : 'tricache-disk'),
+      // Automatically probes /dev/shm tmpfs on Linux (>=256MB capacity and >=128MB free) for off-heap RAM speed.
+      diskCacheDir:             options.diskCacheDir ?? resolveDefaultDiskDir(ns, logger).dir,
       diskMaxBytes:             options.diskMaxBytes    ?? 500 * 1024 * 1024,
       diskEntryMaxBytes:        options.diskEntryMaxBytes ?? 10 * 1024 * 1024,
       redisHost:                options.redisHost  ?? process.env.REDIS_HOST ?? '',
@@ -691,6 +725,11 @@ export class CacheService {
       redisCommandTimeoutMs:    options.redisCommandTimeoutMs,
       clockSkewToleranceMs:     options.clockSkewToleranceMs ?? 250,
       l1AdmissionPolicy:        options.l1AdmissionPolicy,
+      diskLatencyWatchdog:      options.diskLatencyWatchdog ?? true,
+      diskLatencyBypassRatio:   options.diskLatencyBypassRatio ?? 1.5,
+      diskLatencyBypassMinMs:   options.diskLatencyBypassMinMs ?? 10,
+      diskLatencyBypassCooldownMs: options.diskLatencyBypassCooldownMs ?? 30_000,
+      failReadinessOnDegraded:  options.failReadinessOnDegraded ?? false,
     };
 
     this.codec = new CacheCodec({
@@ -751,6 +790,17 @@ export class CacheService {
     // at least one of host / cluster nodes / sentinel is configured.
     this._redisDisabled = this.opts.disableRedis
       || (!this.opts.redisClient && !this.opts.redisHost && !this.opts.redisClusterNodes?.length && !this.opts.redisSentinel);
+
+    this.watchdog = new TierLatencyWatchdog({
+      enabled: options.diskLatencyWatchdog ?? true,
+      minDiskBypassMs: options.diskLatencyBypassMinMs ?? 10,
+      bypassRatio: options.diskLatencyBypassRatio ?? 1.5,
+      cooldownMs: options.diskLatencyBypassCooldownMs ?? 30_000,
+      redisCutoffMs: 15,
+      redisRecoveryFloorMs: 10,
+      minSamples: 16,
+      disableRedis: this._redisDisabled,
+    });
 
     // L1 in-memory cache
     this.l1 = new SmartMemoryCache({
@@ -906,7 +956,67 @@ export class CacheService {
     }
   }
 
-  // ── Singleton factory ─────────────────────────────────────────────────────
+  // ── Singleton factory & Presets ───────────────────────────────────────────
+
+  /**
+   * Pre-configured production presets tailored for specific deployment environments.
+   *
+   * - `'nextjs'`: W-TinyLFU, zero-copy cloneStrategy: 'none' (React 19 RSC stream optimized),
+   *               generational tags, and Redis stream backplane.
+   * - `'microservice'`: High-throughput Node.js microservice with W-TinyLFU, Streams backplane,
+   *                     TTL jitter, and L2 circuit breaking.
+   * - `'serverless'`: Stateless Lambda / Cloud Run isolate with memory-only L1, fast timeouts,
+   *                   and Pub/Sub backplane.
+   * - `'enterprise-hardened'`: Zero-trust production setup with generational tagging, Streams backplane,
+   *                            fail-closed rate-limits, strict singleton assertions, and 80% OOM guard.
+   *
+   * @param type The preset identifier ('nextjs' | 'microservice' | 'serverless' | 'enterprise-hardened')
+   * @param overrides Optional configuration overrides merged deeply over preset defaults
+   * @returns Singleton CacheService instance configured according to the preset
+   */
+  static preset(type: CachePresetType, overrides?: Partial<CacheOptions>): CacheService {
+    const PRESETS: Record<CachePresetType, CacheOptions> = {
+      'nextjs': {
+        l1AdmissionPolicy: 'wtinylfu',
+        cloneStrategy: 'none',
+        tagStrategy: 'generational',
+        tagVersionTtlMs: 2_000,
+        backplaneMode: 'stream',
+        staleIfError: 300,
+        compression: 'none',
+      },
+      'microservice': {
+        l1AdmissionPolicy: 'wtinylfu',
+        backplaneMode: 'stream',
+        ttlJitterFactor: 0.15,
+        l2CircuitBreakerThreshold: 5,
+        l2CircuitBreakerCooldownMs: 15_000,
+      },
+      'serverless': {
+        disableDisk: true,
+        l1AdmissionPolicy: 'wtinylfu',
+        backplaneMode: 'pubsub',
+        redisCommandTimeoutMs: 1_000,
+      },
+      'enterprise-hardened': {
+        l1AdmissionPolicy: 'wtinylfu',
+        tagStrategy: 'generational',
+        backplaneMode: 'stream',
+        strictSingleton: true,
+        failClosed: true,
+        oomProtection: true,
+        oomHeapThreshold: 0.80,
+      },
+    };
+
+    const base = PRESETS[type];
+    if (!base) {
+      throw new Error(`tricache: unknown preset '${type}'. Supported presets: 'nextjs', 'microservice', 'serverless', 'enterprise-hardened'`);
+    }
+
+    const merged = deepMergeOptions(base, overrides);
+    return CacheService.create(merged);
+  }
 
   /**
    * Get (or create) the process-level singleton CacheService instance.
@@ -2092,130 +2202,144 @@ export class CacheService {
     const swrGraceMs = optSwr * 1_000;
     const priority   = optPriority ?? inferPriority(cacheKey);
 
-    // L2: Redis (distributed, production-only by default)
-    if (!this._redisDisabled) {
-      try {
-        const client = await this.getRedis();
-        if (this.opts.tagStrategy === 'generational') {
-          const hashData = await client.hgetall(k);
-          this.cb.onSuccess();
-          if (hashData && hashData.d) {
-            let isStale = false;
-            let storedTagVersions: Record<string, number> = {};
-            if (hashData.tv) {
-              try { storedTagVersions = JSON.parse(hashData.tv); } catch { /* ignore */ }
-            }
-            const tags = Object.keys(storedTagVersions);
-            const currentVers = await Promise.all(tags.map(tag => this._getTagVersion(tag)));
-            for (let i = 0; i < tags.length; i++) {
-              if (currentVers[i] > storedTagVersions[tags[i]]) {
-                isStale = true;
-                break;
-              }
-            }
-            if (isStale) {
-              const setAtMs = parseInt(hashData.t, 10) || 0;
-              this._deleteIfStale(k, setAtMs);
-            } else {
-              const parsed = await this._decryptAndDeserialize<T>(hashData.d);
-              this.l1.set(k, parsed, ttlMs, priority, undefined, undefined, storedTagVersions);
-              this.counters.l2Hits++;
-              this.opts.onHit?.(cacheKey, 'l2');
-              this.logger.debug('L2 hit (Redis hash)', { cacheKey });
-              span.setAttribute('cache.hit', true)
-                .setAttribute('cache.item.tier', 'remote')
-                .setAttribute('cache.hit_tier', 'l2')
-                .end();
-              if (this.opts.frozen) deepFreeze(parsed);
-              return (this.opts.cloneStrategy === 'structuredClone' && parsed != null && typeof parsed === 'object')
-                ? structuredClone(parsed)
-                : parsed;
-            }
-          }
-        } else {
-          const raw = await client.get(k);
-          this.cb.onSuccess();
-          if (raw) {
-            const parsed = await this._decryptAndDeserialize<T>(raw);
-            this.l1.set(k, parsed, ttlMs, priority);
-            this.counters.l2Hits++;
-            this.opts.onHit?.(cacheKey, 'l2');
-            this.logger.debug('L2 hit (Redis)', { cacheKey });
-            span.setAttribute('cache.hit', true)
-              .setAttribute('cache.item.tier', 'remote')
-              .setAttribute('cache.hit_tier', 'l2')
-              .end();
-            if (this.opts.frozen) deepFreeze(parsed);
-            return (this.opts.cloneStrategy === 'structuredClone' && parsed != null && typeof parsed === 'object')
-              ? structuredClone(parsed)
-              : parsed;
-          }
-        }
-      } catch (err) {
-        this.cb.onFailure();
-        this.logger.debug('Redis unavailable, continuing to fetch', { cacheKey, error: (err as Error).message });
-      }
-    }
-
-    // L1.5: disk tier (evicted L1 entries) — skipped when disk is disabled
-    if (!this._diskDisabled) {
-      const diskHit = this.disk.load(k);
-      if (diskHit !== null) {
-        let isDiskStale = false;
-        if (this.opts.tagStrategy === 'generational' && diskHit.tagVersions) {
-          const tags = Object.keys(diskHit.tagVersions);
-          const currentVers = await Promise.all(tags.map(tag => this._getTagVersion(tag)));
-          for (let i = 0; i < tags.length; i++) {
-            if (currentVers[i] > diskHit.tagVersions[tags[i]]) {
-              isDiskStale = true;
-              break;
-            }
-          }
-        }
-
-        if (isDiskStale) {
-          this.disk.delete(k);
-        } else {
-          const promoted = this.l1.importEntries(
-            [{ key: k, entry: diskHit as unknown as SmartCacheEntry }],
-            this.opts.forbiddenSnapshotPrefixes,
-          );
-          if (promoted > 0) {
-            const l1Check = this.l1.get(k);
-            if (l1Check !== null) {
-              this.counters.diskHits++;
-              this.opts.onHit?.(cacheKey, 'disk');
-              this.logger.debug('L1.5 hit (disk → L1)', { cacheKey });
-              span.setAttribute('cache.hit', true)
-                .setAttribute('cache.item.tier', 'disk')
-                .setAttribute('cache.hit_tier', 'disk')
-                .end();
-              if (this.opts.frozen) deepFreeze(l1Check.value);
-              return (this.opts.cloneStrategy === 'structuredClone' && l1Check.value != null && typeof l1Check.value === 'object')
-                ? structuredClone(l1Check.value) as T
-                : l1Check.value as T;
-            }
-          }
-        }
-      }
-    }
-
-    span.setAttribute('cache.hit', false).setAttribute('cache.hit_tier', 'miss');
-    this.opts.onMiss?.(cacheKey);
-
-    // Cache MISS: thundering-herd prevention
+    // ── Singleflight Shielding on the Probabilistic Path ────────────────────────
+    // Coalesce identical concurrent keys onto an inflight Promise BEFORE evaluating
+    // the watchdog's probabilistic coin-flip. Ensures 10 concurrent requests for a cold key
+    // during an EBS stall coalesce into a single execution rather than splitting across tiers.
     const existing = this.inflight.get(k);
     if (existing) {
       this.counters.stampedes++;
-      this.logger.debug('Stampede prevented — coalescing onto inflight fetch', { cacheKey });
+      this.logger.debug('Stampede prevented — coalescing onto inflight fetch/read', { cacheKey });
       span.setAttribute('cache.hit', true)
         .setAttribute('cache.stampede_coalesced', true)
         .end();
       return existing as Promise<T>;
     }
 
-    const fetchPromise: Promise<T> = (async () => {
+    const executionPromise: Promise<T> = (async () => {
       try {
+        // ── Tier 1.5: disk tier (evicted L1 entries) — protected by latency watchdog ──
+        if (!this._diskDisabled) {
+          const isDiskAllowed = this.watchdog.isDiskAllowed();
+          if (isDiskAllowed) {
+            const diskStart = performance.now();
+            const diskHit = this.disk.load(k);
+            const diskElapsed = performance.now() - diskStart;
+            this.watchdog.recordDisk(diskElapsed);
+            this.watchdog.onCanaryResult(diskHit !== null, diskElapsed);
+
+            if (diskHit !== null) {
+              let isDiskStale = false;
+              if (this.opts.tagStrategy === 'generational' && diskHit.tagVersions) {
+                const tags = Object.keys(diskHit.tagVersions);
+                const currentVers = await Promise.all(tags.map(tag => this._getTagVersion(tag)));
+                for (let i = 0; i < tags.length; i++) {
+                  if (currentVers[i] > diskHit.tagVersions[tags[i]]) {
+                    isDiskStale = true;
+                    break;
+                  }
+                }
+              }
+
+              if (isDiskStale) {
+                this.disk.delete(k);
+              } else {
+                const promoted = this.l1.importEntries(
+                  [{ key: k, entry: diskHit as unknown as SmartCacheEntry }],
+                  this.opts.forbiddenSnapshotPrefixes,
+                );
+                if (promoted > 0) {
+                  const l1Check = this.l1.get(k);
+                  if (l1Check !== null) {
+                    this.counters.diskHits++;
+                    this.opts.onHit?.(cacheKey, 'disk');
+                    this.logger.debug('L1.5 hit (disk → L1)', { cacheKey });
+                    span.setAttribute('cache.hit', true)
+                      .setAttribute('cache.item.tier', 'disk')
+                      .setAttribute('cache.hit_tier', 'disk');
+                    if (this.opts.frozen) deepFreeze(l1Check.value);
+                    return (this.opts.cloneStrategy === 'structuredClone' && l1Check.value != null && typeof l1Check.value === 'object')
+                      ? structuredClone(l1Check.value) as T
+                      : l1Check.value as T;
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // ── Tier 2: Redis (distributed, production-only by default) ──
+        if (!this._redisDisabled) {
+          try {
+            const client = await this.getRedis();
+            const redisStart = performance.now();
+            if (this.opts.tagStrategy === 'generational') {
+              const hashData = await client.hgetall(k);
+              const redisElapsed = performance.now() - redisStart;
+              this.watchdog.recordRedis(redisElapsed);
+              this.cb.onSuccess();
+              if (hashData && hashData.d) {
+                let isStale = false;
+                let storedTagVersions: Record<string, number> = {};
+                if (hashData.tv) {
+                  try { storedTagVersions = JSON.parse(hashData.tv); } catch { /* ignore */ }
+                }
+                const tags = Object.keys(storedTagVersions);
+                const currentVers = await Promise.all(tags.map(tag => this._getTagVersion(tag)));
+                for (let i = 0; i < tags.length; i++) {
+                  if (currentVers[i] > storedTagVersions[tags[i]]) {
+                    isStale = true;
+                    break;
+                  }
+                }
+                if (isStale) {
+                  const setAtMs = parseInt(hashData.t, 10) || 0;
+                  this._deleteIfStale(k, setAtMs);
+                } else {
+                  const parsed = await this._decryptAndDeserialize<T>(hashData.d);
+                  this.l1.set(k, parsed, ttlMs, priority, undefined, undefined, storedTagVersions);
+                  this.counters.l2Hits++;
+                  this.opts.onHit?.(cacheKey, 'l2');
+                  this.logger.debug('L2 hit (Redis hash)', { cacheKey });
+                  span.setAttribute('cache.hit', true)
+                    .setAttribute('cache.item.tier', 'remote')
+                    .setAttribute('cache.hit_tier', 'l2');
+                  if (this.opts.frozen) deepFreeze(parsed);
+                  return (this.opts.cloneStrategy === 'structuredClone' && parsed != null && typeof parsed === 'object')
+                    ? structuredClone(parsed)
+                    : parsed;
+                }
+              }
+            } else {
+              const raw = await client.get(k);
+              const redisElapsed = performance.now() - redisStart;
+              this.watchdog.recordRedis(redisElapsed);
+              this.cb.onSuccess();
+              if (raw) {
+                const parsed = await this._decryptAndDeserialize<T>(raw);
+                this.l1.set(k, parsed, ttlMs, priority);
+                this.counters.l2Hits++;
+                this.opts.onHit?.(cacheKey, 'l2');
+                this.logger.debug('L2 hit (Redis)', { cacheKey });
+                span.setAttribute('cache.hit', true)
+                  .setAttribute('cache.item.tier', 'remote')
+                  .setAttribute('cache.hit_tier', 'l2');
+                if (this.opts.frozen) deepFreeze(parsed);
+                return (this.opts.cloneStrategy === 'structuredClone' && parsed != null && typeof parsed === 'object')
+                  ? structuredClone(parsed)
+                  : parsed;
+              }
+            }
+          } catch (err) {
+            this.cb.onFailure();
+            this.logger.debug('Redis unavailable, continuing to fetch', { cacheKey, error: (err as Error).message });
+          }
+        }
+
+        // Cache MISS across all tiers: fetchFn
+        span.setAttribute('cache.hit', false).setAttribute('cache.hit_tier', 'miss');
+        this.opts.onMiss?.(cacheKey);
+
         this.counters.fetches++;
         const fetchStart  = Date.now();
         let data: T;
@@ -2304,8 +2428,8 @@ export class CacheService {
       }
     })();
 
-    this.inflight.set(k, fetchPromise);
-    return fetchPromise;
+    this.inflight.set(k, executionPromise);
+    return executionPromise;
   }
 
   /**
@@ -2894,8 +3018,13 @@ export class CacheService {
     }
 
     // 2. L1.5 Disk
-    if (!this._diskDisabled) {
+    if (!this._diskDisabled && this.watchdog.isDiskAllowed()) {
+      const diskStart = performance.now();
       const diskHit = this.disk.load(k);
+      const diskElapsed = performance.now() - diskStart;
+      this.watchdog.recordDisk(diskElapsed);
+      this.watchdog.onCanaryResult(diskHit !== null, diskElapsed);
+
       if (diskHit !== null) {
         const promoted = this.l1.importEntries(
           [{ key: k, entry: diskHit as unknown as SmartCacheEntry }],
@@ -2920,7 +3049,10 @@ export class CacheService {
     if (!this._redisDisabled && !this.cb.isOpen) {
       try {
         const client = await this.getRedis();
+        const redisStart = performance.now();
         const raw = await client.get(k);
+        const redisElapsed = performance.now() - redisStart;
+        this.watchdog.recordRedis(redisElapsed);
         if (raw !== null) {
           const parsed = await this._decryptAndDeserialize<T>(raw);
           this.l1.set(k, parsed, 60_000, inferPriority(cacheKey));
@@ -2996,7 +3128,10 @@ export class CacheService {
           const nsKeys = missKeys.map(k => this.nk(k));
           const pipeline = client.multi();
           for (const nk of nsKeys) pipeline.get(nk);
+          const redisStart = performance.now();
           const raws = await pipeline.exec() as Array<[Error | null, string | null] | null>;
+          const redisElapsed = (performance.now() - redisStart) / Math.max(1, missKeys.length);
+          this.watchdog.recordRedis(redisElapsed);
           this.cb.onSuccess();
           for (let j = 0; j < missKeys.length; j++) {
             const raw = raws[j] ? (raws[j] as [Error | null, string | null])[1] : null;
@@ -3028,8 +3163,13 @@ export class CacheService {
       // ── Tier 1.5: disk spill (evicted L1 entries) ──
       if (!this._diskDisabled && missKeys.length > 0) {
         for (let j = missKeys.length - 1; j >= 0; j--) {
+          if (!this.watchdog.isDiskAllowed()) continue;
           const k = this.nk(missKeys[j]);
+          const diskStart = performance.now();
           const diskHit = this.disk.load(k);
+          const diskElapsed = performance.now() - diskStart;
+          this.watchdog.recordDisk(diskElapsed);
+          this.watchdog.onCanaryResult(diskHit !== null, diskElapsed);
           if (diskHit !== null) {
             const promoted = this.l1.importEntries(
               [{ key: k, entry: diskHit as unknown as SmartCacheEntry }],
@@ -3399,6 +3539,65 @@ export class CacheService {
     }
 
     return { l1, disk, l2 };
+  }
+
+  /**
+   * Health and readiness diagnostics for container orchestrators (e.g. Kubernetes, ECS, Nomad).
+   *
+   * ─────────────────────────────────────────────────────────────────────────────
+   * ⚠️  CRITICAL CONTAINER PROBE SEMANTICS (Liveness vs. Readiness):
+   * ─────────────────────────────────────────────────────────────────────────────
+   * ❌ NEVER bind `degraded` checks or `cache.health()` to your Liveness Probe (/livez, /healthz).
+   *    If an SRE hooks degraded status into liveness, a storage-starved or EBS-throttled pod
+   *    will be killed by the kubelet, triggering a cluster-wide cascading restart shockwave.
+   *    Liveness probes must only check that the event loop / process is alive.
+   *
+   * ✅ BIND degraded checks strictly to your Readiness Probe (/ready, /readyz).
+   *    A degraded cache (e.g. EBS latency spike, quota watermark pruning, or open Redis circuit)
+   *    can shed traffic at the ingress load balancer while the Node.js process remains
+   *    alive to drain in-flight promises and heal its local storage.
+   *
+   * By default, `healthy` remains `true` even when degraded (graceful local degradation).
+   * Set `failReadinessOnDegraded: true` in CacheOptions if you want your Readiness probe
+   * to route ingress traffic away while degraded.
+   * ─────────────────────────────────────────────────────────────────────────────
+   */
+  health(): CacheHealthStatus {
+    const watchdogTel = this.watchdog.getTelemetry();
+    const diskPruning = !this._diskDisabled && this.disk.isPruning;
+    const diskLowSpace = !this._diskDisabled && this.disk.hostVolumeLowSpace;
+    const circuitOpen = this.cb.isOpen;
+    const latencyBypass = watchdogTel.bypassActive;
+
+    const degraded = circuitOpen || latencyBypass || diskPruning || diskLowSpace;
+    const healthy = this.opts.failReadinessOnDegraded ? !degraded : true;
+
+    const reasons: string[] = [];
+    if (circuitOpen) reasons.push('redis_circuit_breaker_open');
+    if (latencyBypass) reasons.push(`disk_latency_bypass_stage_${watchdogTel.bypassStage}`);
+    if (diskPruning) reasons.push('disk_quota_watermark_pruning_active');
+    if (diskLowSpace) reasons.push('disk_host_volume_low_space');
+
+    return {
+      healthy,
+      degraded,
+      reasons,
+      details: {
+        redisConnected: !circuitOpen && !this._redisDisabled,
+        circuitBreakerState: this.cb.currentState,
+        diskPruningActive: diskPruning,
+        diskHostVolumeLowSpace: diskLowSpace,
+        watchdog: watchdogTel,
+      },
+    };
+  }
+
+  /**
+   * Direct access to the internal tier latency watchdog instance.
+   * Used for diagnostics, canary probes, and control-loop tuning.
+   */
+  getLatencyWatchdog(): TierLatencyWatchdog {
+    return this.watchdog;
   }
 
   /**
@@ -3791,7 +3990,11 @@ export class CacheService {
         sizeBytes: this.l1.memoryUsage,
         maxBytes:  this.opts.l1MaxBytes,
       },
-      disk: { ...this.disk.stats, disabled: this._diskDisabled },
+      disk: {
+        ...this.disk.stats,
+        disabled: this._diskDisabled,
+        latencyWatchdog: this.watchdog.getTelemetry(),
+      },
       ...(this.latencyTracker && {
         adaptiveTtl: {
           enabled: true as const,
@@ -3850,6 +4053,19 @@ export class CacheService {
     gauge('l1_entries',    m.l1.entries,   'Current L1 entry count');
     gauge('l1_size_bytes', m.l1.sizeBytes, 'Current L1 used bytes');
     gauge('disk_files',    m.disk.files,   'Current L1.5 disk file count');
+
+    if (m.disk.latencyWatchdog) {
+      gauge('disk_latency_bypass_stage', m.disk.latencyWatchdog.bypassStage, 'Disk latency watchdog bypass stage (0: normal, 1: 25%, 2: 75%, 3: 100%)');
+      gauge('disk_p95_ms', m.disk.latencyWatchdog.diskP95Ms, 'Disk read p95 latency in ms');
+      gauge('redis_p95_ms', m.disk.latencyWatchdog.redisP95Ms, 'Redis read p95 latency in ms');
+      counter('disk_bypassed_events', m.disk.latencyWatchdog.bypassedTotal, 'Total disk bypass activation events');
+    }
+    if (m.disk.pruning) {
+      counter('disk_spills_shed', m.disk.pruning.spillsShedTotal, 'Total disk spills shed due to pruning or low disk space');
+      counter('disk_prune_rounds', m.disk.pruning.pruneRounds, 'Total high-watermark disk prune rounds');
+      counter('disk_entries_pruned', m.disk.pruning.entriesPruned, 'Total entries removed by watermark pruning');
+      counter('disk_low_space_pauses', m.disk.pruning.hostVolumeLowSpacePauses, 'Total times spills paused due to <10% host volume space');
+    }
 
     gauge('bloom_false_positive_rate', m.bloom.falsePositiveRate,
       'Bloom filter false-positive rate; increase capacity if > 0.01');
