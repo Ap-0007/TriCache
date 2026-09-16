@@ -1,31 +1,34 @@
-# Express & Hono HTTP Middleware
+# Express & Fastify HTTP Middleware
 
 > Package entry: `tricache/http`
 
-TriCache provides standard HTTP route caching middleware with weak ETag calculation and RFC 7232 `304 Not Modified` short-circuiting for Express, Fastify, Connect, and Web Standards runtimes (Hono).
+TriCache provides enterprise-grade HTTP route caching middleware with weak ETag calculation, deterministic query sorting, and RFC 7232 `304 Not Modified` short-circuiting for Express, Fastify, Connect, and Node.js HTTP servers.
 
 ---
 
-## Express & Connect
+## 1. Express & Connect (`createExpressMiddleware`)
+
+Mount `createExpressMiddleware` on routes or routers:
 
 ```typescript
 import express from 'express';
-import { cacheMiddleware } from 'tricache/http';
-import { cache } from './cache';
+import { createExpressMiddleware } from 'tricache/http';
+import { CacheService } from 'tricache';
 
 const app = express();
+const cache = CacheService.create();
 
+// Route-level caching with automatic 304 Not Modified
 app.get(
-  '/api/catalog',
-  cacheMiddleware({
-    cache,
-    ttlSec: 300,
-    swrSec: 60,
-    keyGenerator: (req) => `http:catalog:${req.query.category ?? 'all'}`,
-    tags: ['catalog'],
+  '/api/products',
+  createExpressMiddleware(cache, {
+    ttlSeconds: 300,
+    swrSeconds: 60,
+    headerWhitelist: ['accept-language'],
+    tags: ['products'],
   }),
   async (req, res) => {
-    const products = await fetchProductsFromDb(req.query.category);
+    const products = await db.products.findMany({ where: req.query });
     res.json(products);
   }
 );
@@ -33,33 +36,88 @@ app.get(
 
 ---
 
-## Hono & Web Standards
+## 2. Fastify Plugin (`createFastifyPlugin`)
 
+TriCache wraps Fastify middleware with `[Symbol.for('skip-override')] = true`, eliminating route encapsulation barriers.
+
+### Global Plugin Registration
 ```typescript
-import { Hono } from 'hono';
-import { honoCacheMiddleware } from 'tricache/http';
-import { cache } from './cache';
+import Fastify from 'fastify';
+import { createFastifyPlugin } from 'tricache/http';
+import { CacheService } from 'tricache';
 
-const app = new Hono();
+const fastify = Fastify();
+const cache = CacheService.create();
 
-app.get(
-  '/api/posts',
-  honoCacheMiddleware({
-    cache,
-    ttlSec: 180,
-    tags: ['posts'],
-  }),
-  async (c) => {
-    const posts = await getPosts();
-    return c.json(posts);
-  }
-);
+// Register globally across all GET routes
+await fastify.register(createFastifyPlugin(cache, {
+  ttlSeconds: 120,
+  headerWhitelist: ['x-tenant-id'],
+}));
+```
+
+### Route-Level `preHandler` Hook
+```typescript
+import { createFastifyPlugin } from 'tricache/http';
+
+const plugin = createFastifyPlugin(cache, { ttlSeconds: 300 });
+
+fastify.get('/api/catalog', {
+  preHandler: plugin.preHandler,
+}, async (request, reply) => {
+  return await fetchCatalog();
+});
 ```
 
 ---
 
-## RFC 7232 ETag Validation & Bandwidth Savings
+## 3. RFC 7232 ETag Validation & Bandwidth Savings
 
-1. **Automatic Weak ETags**: TriCache hashes response payloads and emits an `ETag: W/"<hash>"` header.
-2. **Conditional Requests (`If-None-Match`)**: When clients or CDNs send matching `If-None-Match` headers, TriCache short-circuits execution before payload serialization, returning an empty `304 Not Modified` response.
-3. **Bandwidth Preservation**: Eliminates 100% of network data transfer costs for repeat mobile and browser clients.
+1. **Automatic Weak ETags**: TriCache generates fast weak ETags (`ETag: W/"<hash>"`) across cached response bodies.
+2. **Conditional Requests (`If-None-Match`)**: When clients or downstream CDNs present an `If-None-Match` header matching the cached ETag, TriCache halts execution before body serialization, returning an immediate `304 Not Modified` with zero response body bytes.
+3. **Bandwidth Savings**: Eliminates up to 100% of redundant data transfer costs for high-traffic mobile applications, REST APIs, and microservice meshes.
+
+---
+
+## 4. Deterministic Key Derivation & Query Sorting
+
+By default, TriCache generates deterministic cache keys using:
+- HTTP method (`GET`)
+- Request pathname
+- **Lexicographically sorted query parameters**: `?limit=10&page=2` and `?page=2&limit=10` produce identical cache keys, maximizing cache hit ratios.
+- **Whitelisted headers**: Only headers explicitly configured in `headerWhitelist` affect the cache key (e.g. `accept-language`, `x-tenant-id`), preventing cache fragmentation from random client headers.
+
+---
+
+## 5. Cache Bypass & Conditional Controls
+
+TriCache respects standard HTTP client and server cache control semantics:
+
+* **Client `Cache-Control`**: Requests containing `Cache-Control: no-cache` or `Cache-Control: no-store` bypass the cache and trigger a fresh origin query.
+* **Custom `skipCache` Predicate**: Provide a custom rule to conditionally bypass caching (e.g. skip authenticated users or admin requests):
+
+```typescript
+app.get(
+  '/api/search',
+  createExpressMiddleware(cache, {
+    ttlSeconds: 60,
+    skipCache: (req) => Boolean(req.headers['authorization']),
+  }),
+  searchHandler
+);
+```
+
+* **Status Code Gating**: TriCache only caches successful 2xx responses. Error responses (4xx, 5xx) are never cached.
+
+---
+
+## 6. Options Reference
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `ttlSeconds` | `number` | `300` | Time-to-live in seconds |
+| `swrSeconds` | `number` | `0` | Stale-While-Revalidate window in seconds |
+| `keyGenerator` | `(req) => string` | `buildDeterministicKey` | Custom cache key generator function |
+| `headerWhitelist` | `string[]` | `[]` | Request headers incorporated into the cache key |
+| `skipCache` | `(req) => boolean` | `undefined` | Predicate returning true to bypass cache |
+| `tags` | `string[] \| ((req) => string[])` | `[]` | Semantic tags for targeted `cache.invalidateTag()` |

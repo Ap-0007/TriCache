@@ -210,3 +210,82 @@ const cache = CacheService.create({
 * **XFetch Probabilistic Early Expiration**: Prevents cache stampedes by recomputing entries ahead of time with increasing probability as expiration approaches:
   $$\Delta \cdot \beta \cdot \ln(\text{rand}()) < t - t_{\text{expiry}}$$
 
+---
+
+## 11. Dual-Constrained Autonomous L1 Memory Sizing
+
+When running in containerized environments (Kubernetes, AWS ECS, GCP Cloud Run), sizing L1 cache based solely on cgroup limits can trigger V8 heap OOM crashes if `--max-old-space-size` is smaller than container memory.
+
+TriCache implements a dual-constrained sizing formula combining Linux cgroup v1/v2 limit detection with V8 runtime statistics:
+
+$$\text{Target L1} = \max\left(16\text{ MB}, \min\left(\text{cgroupLimit} \times 0.40, \text{v8HeapLimit} \times 0.50, 512\text{ MB}\right)\right)$$
+
+### Key Invariants:
+* **Distroless Permission Trap Defense**: Wrapped inside safe `try/catch` defaulting to `Infinity` on `EACCES` or missing files in hardened non-root containers.
+* **Heap Headroom Protection**: Caps L1 at 50% of `v8.getHeapStatistics().heap_size_limit`, preventing garbage collection thrashing.
+* **Container Headroom Protection**: Caps L1 at 40% of cgroup capacity to leave ample room for OS page cache, native threads, and network buffers.
+
+---
+
+## 12. Zero-Latency Microtask Redis Auto-Pipelining
+
+Traditional auto-batchers use timer intervals (`setTimeout(flush, 1)`) which introduce artificial latency penalties to high-throughput services.
+
+TriCache implements zero-latency microtask pipelining via `queueMicrotask`:
+
+```typescript
+const cache = CacheService.create({
+  autoPipeline: true,
+  maxPipelineBatchSize: 100, // Immediate flush threshold
+});
+```
+
+* **Tick Boundary Coalescing**: All concurrent operations initiated in the same synchronous JavaScript turn are batched into a single Redis pipeline call before I/O returns to the libuv poll phase.
+* **Zero Timer Delay**: Microtasks fire immediately after synchronous execution, incurring **0.00ms artificial delay**.
+* **High-Load Flushes**: If the queue fills to `maxPipelineBatchSize` before the tick ends, it flushes immediately.
+
+---
+
+## 13. Priority-Aware Partitioned Disk Tiering
+
+To protect high-value entries from being evicted by high-volume transient data, TriCache uses priority-partitioned SQLite storage:
+
+```typescript
+// Critical entry protected from early eviction
+await cache.set('auth:master-token', token, 86400, CachePriority.CRITICAL);
+
+// Low-priority scraping query subject to aggressive pruning
+await cache.set('feed:rss', feed, 300, CachePriority.LOW);
+```
+
+* **Composite Index**: Backed by `CREATE INDEX IF NOT EXISTS idx_priority_access ON meta (priority ASC, last_accessed_at ASC);`
+* **Watermark Pruning**: When disk usage exceeds high watermarks, TriCache evicts `LOW` and `NORMAL` entries first based on LRU access time, preserving `HIGH` and `CRITICAL` entries.
+
+---
+
+## 14. Asymmetric Key Envelope Encryption (`TRICENV1`)
+
+For zero-trust multi-cloud deployments and compliance with SOC2/PCI-DSS, TriCache provides asymmetric envelope encryption (`EnvelopeEncryption`) for cold-start and remote snapshots:
+
+```typescript
+import { EnvelopeEncryption } from 'tricache';
+
+const envelope = new EnvelopeEncryption({
+  publicKey: rsaPublicKeyPem, // For encrypting ephemeral DEKs
+  privateKey: rsaPrivateKeyPem, // For decrypting DEKs on hydration
+});
+```
+
+### Binary Header Specification (`TRICENV1`):
+```
+┌──────────────┬──────────────┬──────────────────┬──────────────┬──────────────┬──────────────┐
+│ Magic Header │ Key Len (BE) │ Encrypted DEK    │ GCM IV       │ Auth Tag     │ Ciphertext   │
+│ 8 bytes      │ 4 bytes (u32)│ Variable length  │ 12 bytes     │ 16 bytes     │ N bytes      │
+│ "TRICENV1"   │ e.g. 256/512 │ (RSA-OAEP 256)   │ (random)     │ (AES-GCM)    │ (Payload)    │
+└──────────────┴──────────────┴──────────────────┴──────────────┴──────────────┴──────────────┘
+```
+
+* **Tamper Rejection**: Any alteration to the header, IV, tag, or encrypted DEK fails authentication before memory allocation.
+* **KMS Extensibility**: Supports custom `kmsWrapKey` and `kmsUnwrapKey` hooks for direct integration with AWS KMS, Google Cloud KMS, or HashiCorp Vault.
+
+

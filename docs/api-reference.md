@@ -436,6 +436,10 @@ Complete schema of options passed to `CacheService.create(options)`:
 | `tagStrategy` | `'set' \| 'generational'` | `'generational'` | $O(1)$ generational tag versioning |
 | `ttlJitterFactor` | `number` | `0.0` | Randomize TTL by $\pm \text{factor} \times \text{ttl}$ |
 | `adaptiveTtl` | `boolean` | `false` | Autonomous p95 fetch latency TTL tuning |
+| `autoPipeline` | `boolean` | `false` | Zero-latency microtask Redis command batching |
+| `maxPipelineBatchSize` | `number` | `100` | Immediate flush batch size threshold |
+| `enableIpc` | `boolean` | `false` | Enables local IPC bridge for `tricache top` |
+| `ipcSocketPath` | `string` | `undefined` | Custom Unix domain socket or Windows named pipe |
 | `crossRegion` | `CrossRegionRelayOptions` | `undefined` | Multi-cluster cross-region invalidation relay |
 | `remoteSnapshot` | `RemoteSnapshotOptions` | `undefined` | S3 / Cloudflare R2 snapshot persistence |
 
@@ -456,3 +460,70 @@ The TriCache engine honors the following environment variables across all enviro
 | `DASHBOARD_PASSWORD` | Observability Web UI | Basic authentication password for the embedded SSE admin dashboard. |
 | `MANAGEMENT_SECRET` | Cluster CLI & RPC | Bearer token authenticating remote CLI management commands. |
 | `POD_NAME` / `HOSTNAME` | Fleet Diagnostics | Container identifier tagged in Prometheus metrics and cluster logs. |
+
+---
+
+## 9. HTTP & Framework Middlewares (`tricache/http` & `tricache/edge`)
+
+### `createExpressMiddleware(cache, options?)`
+Creates an Express/Connect route middleware with deterministic query sorting, weak ETag calculation, and RFC 7232 `304 Not Modified` short-circuiting.
+
+```typescript
+import { createExpressMiddleware } from 'tricache/http';
+
+app.get('/api/users', createExpressMiddleware(cache, {
+  ttlSeconds: 300,
+  headerWhitelist: ['accept-language'],
+}), handler);
+```
+
+### `createFastifyPlugin(cache, options?)`
+Creates an encapsulation-safe Fastify plugin (`[Symbol.for('skip-override')] = true`) intercepting requests early in `onRequest` and caching responses in `onSend`.
+
+```typescript
+import { createFastifyPlugin } from 'tricache/http';
+
+await fastify.register(createFastifyPlugin(cache, { ttlSeconds: 120 }));
+```
+
+### `createHonoEdgeMiddleware(edgeCache, options?)`
+Creates a decoupled Hono edge middleware using pure Web Standards (`Request`, `Response`, `crypto.subtle`) with zero Node native dependencies.
+
+```typescript
+import { createHonoEdgeMiddleware } from 'tricache/edge';
+
+app.get('/api/items', createHonoEdgeMiddleware(edgeCache, { ttlSeconds: 180 }), handler);
+```
+
+---
+
+## 10. IPC Telemetry Bridge (`tricache/ipc`)
+
+### `IpcTelemetryServer`
+Lightweight, non-blocking IPC server running on Unix domain sockets or Windows Named Pipes that exposes metrics snapshots to external CLI monitors.
+
+```typescript
+import { IpcTelemetryServer } from 'tricache';
+
+const server = new IpcTelemetryServer(cache);
+await server.start();
+// Automatically binds SIGINT / SIGTERM / exit cleanup hooks
+await server.close();
+```
+
+### `IpcTelemetryClient`
+Connects to a running TriCache process over IPC to retrieve live metrics or measure latency.
+
+```typescript
+import { IpcTelemetryClient } from 'tricache';
+
+const client = new IpcTelemetryClient();
+const metrics = await client.getMetrics();
+const latencyMs = await client.ping();
+```
+
+### `resolveIpcSocketPath(id?)`
+Resolves platform-agnostic socket/pipe paths:
+* POSIX (`linux`, `darwin`): `/tmp/tricache-<id>.sock` (or `$TMPDIR/...`)
+* Windows (`win32`): `\\.\pipe\tricache-<id>`
+

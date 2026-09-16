@@ -176,20 +176,85 @@ const cache = CacheService.create({
 
 ---
 
-## 4. Terminal CLI (`npx tricache`)
+## 4. Live Terminal CLI & Top Monitor (`tricache top`)
 
-Inspect and manage running TriCache and Redis instances directly from your terminal:
+TriCache provides a terminal administration and live ASCII top monitor powered by a platform-agnostic IPC bridge:
+
+### Live Process Monitor (`tricache top`)
+
+Inspect any live TriCache host process in real time without HTTP overhead or network latency:
+
+```bash
+# Auto-detect and monitor local TriCache process
+npx tricache top
+
+# Target specific process by PID or custom socket / pipe
+npx tricache top --pid 12345
+npx tricache top --socket /tmp/tricache-12345.sock
+
+# Single snapshot output for CI, cron, or piping
+npx tricache top --once
+
+# Machine-readable JSON telemetry
+npx tricache top --once --json
+```
+
+```
+╔══════════════════════════════════════════════════════════════════════════════════════╗
+║  TriCache Monitor [PID: 4321  ]   Uptime: 2h 15m     Namespace: prod-api             ║
+╠══════════════════════════════════════════════════════════════════════════════════════╣
+║  Hit Ratios & Tier Breakdown (Total Gets: 1,452,100   )                             ║
+║    L1 (RAM):   [████████████░░░░░░]  65.4%   (     950,200 hits)                     ║
+║    L1.5(Disk): [████░░░░░░░░░░░░░░]  20.1%   (     291,872 hits)                     ║
+║    L2 (Redis): [██░░░░░░░░░░░░░░░░]  10.2%   (     148,114 hits)                     ║
+║    Misses:     [█░░░░░░░░░░░░░░░░░]   4.3%   (      61,914 fetches)                  ║
+║    Stampedes Saved: 42,100   coalesced concurrent requests                           ║
+╠══════════════════════════════════════════════════════════════════════════════════════╣
+║  Memory & Storage Headroom                                                           ║
+║    L1 Memory:  [███████░░░░░░░░░░░]  42.5 MB / 128 MB   ( 14,250 entries)            ║
+║    Disk Spill:   112 MB / 500 MB    (  1,240 files)                                  ║
+╠══════════════════════════════════════════════════════════════════════════════════════╣
+║  Protection & Health Diagnostics                                                     ║
+║    Watchdog:   Stage 0 (Normal)     L2 Circuit Breaker: closed                       ║
+║    Disk p95:   1.25ms     Redis p95: 0.85ms     Bypassed: 0                          ║
+║    OOM Evictions: 0      SWR Revalidations: 12,410                                   ║
+╠══════════════════════════════════════════════════════════════════════════════════════╣
+║  🔥 Top Hot Keys (Count-Min Sketch)                                                  ║
+║  1. user:profile:102                            14,200 hits (2.1 KB)                 ║
+║  2. config:tenant:global                         9,840 hits (8.4 KB)                 ║
+║  3. catalog:category:electronics                 5,420 hits (16.2 KB)                ║
+╚══════════════════════════════════════════════════════════════════════════════════════╝
+```
+
+### Enabling IPC Telemetry in Your App
+
+To enable the local IPC bridge in your application, set `enableIpc: true`:
+
+```typescript
+import { CacheService } from 'tricache';
+
+const cache = CacheService.create({
+  namespace: 'my-app',
+  enableIpc: true, // Listens on /tmp/tricache-<pid>.sock or \\.\pipe\tricache-<pid>
+});
+```
+
+* **Platform-Agnostic IPC**: Automatically resolves to Unix domain sockets on POSIX (`/tmp/tricache-<pid>.sock` or `$TMPDIR/...`) and Windows Named Pipes (`\\.\pipe\tricache-<pid>`) on `win32`.
+* **Non-Blocking Telemetry Pull**: Serialization and stats sampling run on tick boundaries via `setImmediate`, eliminating event-loop stalls in the monitored host application.
+* **POSIX Socket Hygiene**: Automatically registers `process.once('exit')`, `SIGINT`, and `SIGTERM` signal traps to clean up socket files on termination.
+
+---
+
+## 5. Standalone Troubleshooting Commands
 
 ```bash
 # 1. Live cluster telemetry inspection
 npx tricache inspect --redis redis://127.0.0.1:6379
 
-# 2. Purge cache tags across all cluster nodes
-npx tricache invalidate --tag users --redis redis://127.0.0.1:6379
+# 2. Clear keys matching a prefix
+npx tricache clear --prefix user: --redis redis://127.0.0.1:6379
 
-# 3. Export Prometheus metrics
-npx tricache metrics --prometheus
-
-# 4. Measure three-tier round-trip latency
+# 3. Measure three-tier round-trip latency
 npx tricache ping --redis redis://127.0.0.1:6379
 ```
+

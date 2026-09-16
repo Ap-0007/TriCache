@@ -5,9 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.8.0] — 2026-09-10
+## [0.8.0] — 2026-09-16
 
 ### Added
+- **Platform-Agnostic IPC Telemetry Bridge & Live CLI Top Monitor (`src/ipc-telemetry.ts`, `src/cli.ts`)** — Enterprise-grade IPC bridge and live ASCII terminal monitoring:
+  - **Platform-Agnostic IPC**: Unix domain sockets on POSIX (`/tmp/tricache-<pid>.sock` or `$TMPDIR/...`) and Windows Named Pipes (`\\.\pipe\tricache-<pid>`) on `win32`.
+  - **Non-Blocking Telemetry Pull**: Command requests (`GET_METRICS`, `PING`, `INSPECT`) defer stats collection and JSON serialization across tick boundaries via `setImmediate`, eliminating event-loop stalls in the monitored host application.
+  - **Automatic Socket Hygiene**: Automatically registers `process.once('exit')`, `SIGINT`, and `SIGTERM` signal traps to unlink orphaned `.sock` files synchronously on process termination, with clean programmatic teardown via `server.close()`.
+  - **Interactive TTY Top Loop (`tricache top`)**: Real-time terminal dashboard with alternate screen buffer switching (`\x1b[?1049h`), cursor hiding (`\x1b[?25l`), stdin raw mode for `q`/`Ctrl+C` exit, non-interactive piped fallback (`!process.stdout.isTTY` or `--once`), and `--json` machine-readable output.
+  - **Visual Proportional ASCII Gauges**: Real-time progress bars for L1 RAM, L1.5 Disk, L2 Redis, and misses, autonomous L1 memory headroom, NVMe disk quota, Latency Watchdog bypass stages, and Count-Min Sketch top hot keys.
+- **Framework-Native HTTP Middlewares & Decoupled Edge Bundle (`src/http/`, `src/edge/`)** — Zero-overhead HTTP caching layer with RFC 7232 ETag validation:
+  - **Express Middleware (`createExpressMiddleware` / `src/http/express.ts`)**: Deterministic query-sorted cache key generation, header whitelisting, fast weak ETag calculation (`W/"..."`), immediate `304 Not Modified` short-circuiting on `If-None-Match`, and conditional bypass for `Cache-Control: no-cache, no-store`.
+  - **Fastify Plugin (`createFastifyPlugin` / `src/http/fastify.ts`)**: Encapsulation-safe plugin using Fastify's `[Symbol.for('skip-override')] = true`, intercepting requests early in `onRequest` and streaming response capture in `onSend`, with support for route `preHandler` hooks.
+  - **Decoupled Hono Edge Middleware (`createHonoEdgeMiddleware` / `src/edge/hono.ts`)**: Pure Web Standards implementation (`Request`, `Response`, `crypto.subtle`) without Node.js native dependencies (`node:fs`, `node:worker_threads`, SQLite) for Cloudflare Workers, Fastly Compute, Vercel Edge, Deno, and Bun.
+  - **Dedicated Package Exports**: Explicit `./http` and `./edge` subpath exports in `package.json` with separate TypeScript type definitions (`dist/http/index.d.ts`, `dist/edge/index.d.ts`).
+- **Dual-Constrained Autonomous L1 Memory Sizing (`src/utils/cgroup.ts`, `src/cache-service.ts`)** — Container-aware memory allocation preventing V8 heap OOM crashes:
+  - Automatically probes Linux cgroup v2 (`/sys/fs/cgroup/memory.max`) and v1 (`/sys/fs/cgroup/memory/memory.limit_in_bytes`) with safe error traps defaulting to `Infinity` on `EACCES`/`ENOENT` in hardened distroless containers.
+  - Dual-constrains L1 cache capacity against V8 heap statistics: $\min(\text{cgroup} \times 0.40, \text{v8Heap} \times 0.50, 512\text{ MB})$ with a 16 MB floor, preventing Node from crashing when container memory exceeds `--max-old-space-size`.
+- **Zero-Latency Microtask Redis Auto-Pipelining (`src/adapters/auto-pipeliner.ts`, `src/cache-service.ts`)** — Microtask-coalesced Redis command batching:
+  - Coalesces concurrent GET, SETEX, and DEL operations occurring in the same event-loop tick into single `pipeline.exec()` calls using `queueMicrotask` exclusively (0ms timer overhead).
+  - Triggers immediate flushes without waiting for microtasks when `maxPipelineBatchSize` (default: 100) is reached.
+  - Configured via `CacheOptions.autoPipeline: true` and monitored via `cache.getPipelinerStats()`.
+- **Priority-Aware Partitioned Disk Tiering (`src/disk-tier.ts`)** — Tiered persistent storage with eviction protection for critical entries:
+  - Added `priority` and `last_accessed_at` columns to SQLite metadata with automated backwards-compatible schema migrations.
+  - Composite SQLite index: `CREATE INDEX IF NOT EXISTS idx_priority_access ON meta (priority ASC, last_accessed_at ASC);`
+  - High-watermark disk pruner prioritizes evicting LOW/NORMAL priority entries before ever touching HIGH or CRITICAL entries.
+- **Asymmetric Key Envelope Encryption (`src/encryption.ts`, `src/remote-snapshot.ts`)** — Cryptographic wire specification for zero-trust cloud snapshots:
+  - Implemented `EnvelopeEncryption` class generating ephemeral 256-bit AES-GCM data encryption keys (DEKs) wrapped with asymmetric RSA-OAEP (SHA-256) public keys or cloud KMS hooks.
+  - Serialized into tamper-proof binary format with `TRICENV1` header, 4-byte big-endian wrapped key length, wrapped DEK, 12-byte IV, 16-byte authentication tag, and ciphertext.
+- **Next.js 16 App Router Demo & `cacheHandlers` Spec Compliance (`examples/nextjs/`, `src/next/cache-handler.ts`)** ([#8](https://github.com/Kareem411/TriCache/issues/8), [#21](https://github.com/Kareem411/TriCache/pull/21)) — Complete reference Next.js 16 App Router sample application demonstrating Cache Components (`'use cache'`), live latency comparisons (~1000ms vs ~1ms), on-demand revalidation via Server Actions (`updateTag`), and alignment with Next.js 16 `cacheHandlers` specification returning `undefined` on cache misses. Contributed by @dev-ararawi0x.
 - **Dynamic Tier Latency Watchdog & Fleet Blast-Radius Shielding (`src/latency-watchdog.ts`)** — Self-healing tier latency watchdog protecting application p95 response times under cloud NVMe and multi-tenant EBS throttling:
   - Amortized zero-allocation p95 calculation: rolling 32-sample sliding window evaluated every 32 writes on pre-allocated `Float32Array` ring buffers.
   - 4-Stage graduated probabilistic shedding: Stage 0 (0% bypass) → Stage 1 (25% bypass) → Stage 2 (75% bypass) → Stage 3 (100% bypass).

@@ -67,3 +67,28 @@ Or trigger rotation dynamically in a running process:
 ```typescript
 await cache.rotateEncryptionKey(newKeyBase64, 'aes-256-gcm');
 ```
+
+---
+
+## Asymmetric Key Envelope Encryption (`EnvelopeEncryption`)
+
+For zero-trust snapshot transfers to object storage (S3, R2, GCS) or cross-region invalidation meshes, TriCache supports asymmetric envelope encryption:
+
+```typescript
+import { EnvelopeEncryption } from 'tricache';
+
+const envelope = new EnvelopeEncryption({
+  publicKey: process.env.RSA_PUBLIC_KEY,   // Encrypts ephemeral data keys (DEKs)
+  privateKey: process.env.RSA_PRIVATE_KEY, // Decrypts DEKs during cold hydration
+});
+
+const encryptedBuffer = envelope.encrypt(serializedSnapshot);
+const decryptedBuffer = envelope.decrypt(encryptedBuffer);
+```
+
+### Security Properties:
+* **Ephemeral DEKs**: Each snapshot payload generates a cryptographically random 256-bit AES-GCM data key (`crypto.randomBytes(32)`).
+* **Asymmetric Protection**: The ephemeral DEK is wrapped using RSA-OAEP with SHA-256 digest padding.
+* **Tamper Proofing (`TRICENV1`)**: Encapsulated within a binary envelope containing authentication tags and big-endian key length bounds, preventing truncation attacks and bit-flipping.
+* **Hardware Security Module (HSM) / KMS**: Use `kmsWrapKey` and `kmsUnwrapKey` callbacks to delegate key wrapping directly to AWS KMS, GCP KMS, or Azure Key Vault without storing private keys in application memory.
+
