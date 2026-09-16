@@ -5,9 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.8.0] — 2026-09-09
+## [0.8.0] — 2026-09-16
 
 ### Added
+- **Next.js 16 App Router Demo & `cacheHandlers` Spec Compliance (`examples/nextjs/`, `src/next/cache-handler.ts`)** ([#8](https://github.com/Kareem411/TriCache/issues/8), [#21](https://github.com/Kareem411/TriCache/pull/21)) — Complete reference Next.js 16 App Router sample application demonstrating Cache Components (`'use cache'`), live latency comparisons (~1000ms vs ~1ms), on-demand revalidation via Server Actions (`updateTag`), and alignment with Next.js 16 `cacheHandlers` specification returning `undefined` on cache misses. Contributed by @dev-ararawi0x.
+- **Dynamic Tier Latency Watchdog & Fleet Blast-Radius Shielding (`src/latency-watchdog.ts`)** — Self-healing tier latency watchdog protecting application p95 response times under cloud NVMe and multi-tenant EBS throttling:
+  - Amortized zero-allocation p95 calculation: rolling 32-sample sliding window evaluated every 32 writes on pre-allocated `Float32Array` ring buffers.
+  - 4-Stage graduated probabilistic shedding: Stage 0 (0% bypass) → Stage 1 (25% bypass) → Stage 2 (75% bypass) → Stage 3 (100% bypass).
+  - Asymmetric hysteresis on Redis circuit: cuts diversion at 15ms latency ceiling, requiring sustained recovery below 10ms over consecutive samples before re-enabling Redis traffic.
+  - Anti-synchronicity cooldown jitter (±30%): randomizes cooldown durations to eliminate fleet-wide failover shockwaves across Kubernetes replica sets.
+  - Single-canary half-open probing: sends a single trial read upon cooldown expiration, smoothly restoring tier routing without re-saturating degraded storage controllers.
+  - Telemetry & stats: exposed via `cache.getWatchdogStats()` and `stats().watchdog`.
+- **Linux Container `/dev/shm` tmpfs Off-Heap Resolver (`src/disk-tier.ts`, `src/types.ts`)** — Automatic container runtime detection targeting POSIX shared memory:
+  - `resolveDefaultDiskDir(namespace)` automatically targets Linux POSIX shared memory `/dev/shm` when capacity $\ge 256\text{ MB}$ and free space $\ge 128\text{ MB}$.
+  - Delivers 0.02ms memory bus read/write speeds, bypasses cloud EBS IOPS, and guarantees 100% compliance with CIS/SOC2 `readOnlyRootFilesystem: true` hardened containers.
+  - Safe fallback to `os.tmpdir()` for Docker default 64MB environments, macOS, and Windows.
+- **Strict Ephemeral Storage Quota & Eviction Defense (`src/disk-tier.ts`)** — Autonomous host volume health monitoring preventing Kubernetes node eviction:
+  - Evaluates host volume capacity every 2,000 writes via `fs.statfsSync(dir)`.
+  - Pauses disk cache spills and engages fast write shedding (`spillsShedTotal`) when free disk space falls below 10%, preventing Kubernetes `DiskPressure` and `EphemeralStorageExceeded` pod evictions.
+  - Non-blocking chunked pruning down to 60% watermark in 500-entry batches with `setImmediate` event-loop cooperative yielding.
 - **Native Window TinyLFU (W-TinyLFU) Admission Engine (`src/wtiny-lfu.ts`)** — Full native implementation of the W-TinyLFU segmented cache admission policy popularized by Caffeine:
   - Three-tier segmented architecture: Window Cache (LRU, ~1% capacity) absorbs burst-recency spikes without polluting resident entries; Segmented LRU divides the main cache into Probationary SLRU (~20%) and Protected SLRU (~80%).
   - TinyLFU Admission Gate: When the Window overflows, its LRU victim competes against the Probationary victim in a 4-row Count-Min Sketch. Candidates with higher historical frequency are admitted, while low-frequency candidates are rejected.
@@ -52,13 +68,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Transparently translates single and multi-key deletions, camelCase methods (`sAdd`, `sMembers`, `setEx`, `mGet`), distributed locks (`EVAL` Lua scripts), and transactions.
   - Normalizes pipeline/multi execution into error-first tuple arrays (`Array<[Error | null, T]>`) for 100% compatibility with all batch and warming flows.
   - Added `redisClient?: IRedisDriver | any` and `redisSubClient?: IRedisDriver | any` options to `CacheOptions`.
+- **Package Root Re-Exports (`src/index.ts`)** — Re-exported key adapters and cluster utilities from `'tricache'` root: `createNodeRedisAdapter`, `createHttpMeshRelay`, `createCustomCrossRegionRelay`, `createCrossRegionWebhookHandler`, `TierLatencyWatchdog`, `resolveDefaultDiskDir`.
 - **Edge WebAssembly & Murmur3 Bloom Filter (`tricache/edge`)** — High-performance cold-miss penetration defense for V8 edge isolates:
   - Removed Node.js `Buffer` dependency in `src/wasm/bloom-filter-wasm.ts` via chunked `base64ToUint8Array`, making the WASM Bloom filter 100% universal across Cloudflare Workers, Fastly Compute, Vercel Edge, and browsers.
   - Created `Murmur3BloomFilter` and `murmur3_32` (`src/edge/utils/murmur3.ts`) implementing standard 32-bit MurmurHash3 double-hashing with Kirsch-Mitzenmacher bitset probing over a pure `Uint8Array` bit-array.
   - Integrated Bloom filter into `EdgeCacheService` (`bloomFilter: boolean | IEdgeBloomFilter`): ~300ns in-isolate miss rejection completely prevents expensive, metered HTTP subrequests to remote storage (Upstash Redis REST, Cloudflare KV) on 404 routes and randomized bot crawler keys.
-- **Expanded Test Suite** — Expanded to **703 passing tests across 65 test files** with 100% test pass rate.
+- **Expanded Test Suite** — Expanded to **756 passing tests across 71 test files** with 100% test pass rate.
 - **`CacheCodec` abstraction (`src/codec.ts`)** — Centralized msgpackr binary serialization engine with built-in record structure deduplication (`useRecords: true`), rich type preservation (`moreTypes: true` for `Set`, `TypedArray`, `Date`, etc.), and strict plain-object map decoding (`mapsAsObjects: true`).
 - **`serializeToJSON` option in `CacheOptions`** — Configurable flag (defaults to `true`) leveraging msgpackr 2.1.0's `useToJSON` capability. Setting `serializeToJSON: false` preserves the object's actual internal properties in durable cache tiers without invoking `.toJSON()`, avoiding accidental HTTP response projections on cached domain entities.
+- **Enterprise Documentation & Observability Suite (`docs/`)** — Comprehensive VitePress documentation suite:
+  - Interactive guides for Next.js 16/15, NestJS, Prisma, Drizzle, Express/Hono, Edge Isolates, and Visual Dashboard.
+  - Dedicated Kubernetes SRE documentation covering `/dev/shm`, cgroups, probes, latency watchdog, and eviction defense.
+  - Complete Observability guide with real-time SSE Web Dashboard, Grafana Golden Signals template, Prometheus alerting rules, and CLI.
 - **Dedicated test suites** — Added comprehensive coverage for previously untested integration layers, bringing the test suite to 554 tests passing:
   - `tests/codec-improvements.test.ts`: Record structure deduplication (~45% smaller binary size), `serializeToJSON` toggle, rich type round-tripping, and DoS rejection.
   - `tests/drizzle.test.ts`: Deterministic query hashing and `withCache` query execution wrapping.

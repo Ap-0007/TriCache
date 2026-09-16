@@ -5,6 +5,10 @@
 In modern cloud-native infrastructures (Kubernetes HPA, AWS ECS/Fargate, Google Cloud Run, Fly.io, and Knative), application containers are fundamentally stateless and ephemeral. When traffic spikes trigger horizontal autoscaling or rolling deployments replace running pods, new instances spin up with **empty in-memory caches (L1 cold starts)**.
 
 ### The Autoscaling Stampede Problem
+
+![The Autoscaling Stampede Problem](/docs/Database_traffic_spike_causing_c…_20260910184732.jpeg)
+
+::: details ASCII Stampede Flow
 ```
                           ┌─────────────────────────────────────────────────────────┐
                           │         Traffic Spike / Rolling Deployment              │
@@ -23,6 +27,7 @@ In modern cloud-native infrastructures (Kubernetes HPA, AWS ECS/Fargate, Google 
                           │   ❌ Cascading 504 Gateway Timeouts                     │
                           └─────────────────────────────────────────────────────────┘
 ```
+:::
 
 Without cold-start hydration:
 1. Every newly scheduled container replica hammers upstream databases and shared Redis instances with duplicate queries for hot keys.
@@ -35,6 +40,9 @@ Without cold-start hydration:
 
 TriCache's **Cold-Start Cloud Hydration** enables stateless containers to serialize L1 memory into compact, encrypted binary snapshots and persist them to multi-cloud object storage (AWS S3, Cloudflare R2, Google Cloud Storage, Azure Blob Storage, MinIO, or internal HTTP blob gateways).
 
+![Cold-Start Cloud Hydration Architecture](/docs/Pod_state_serialization_and_migr…_20260910184554.jpeg)
+
+::: details ASCII Hydration Lifecycle
 ```
                              [Object Storage: S3 / R2 / GCS / HTTP]
                                               ▲
@@ -52,9 +60,11 @@ TriCache's **Cold-Start Cloud Hydration** enables stateless containers to serial
      │ 3. Encrypt (AES-256-GCM)  │                         │ 3. Decrypt & verify HMAC  │
      │ 4. HTTP PUT to S3 / R2    │                         │ 4. Re-hydrate L1 RAM      │
      │ 5. Container exits cleanly│                         │ 5. cache.ready() unblocks │
-     └───────────────────────────┘                         │ 6. k8s routes traffic     │
-                                                           └───────────────────────────┘
+     │ └─────────────────────────┘                         │ 6. k8s routes traffic     │
+     │                                                     └───────────────────────────┘
+     └───────────────────────────┘
 ```
+:::
 
 ---
 
@@ -101,12 +111,16 @@ If object storage returns HTTP 404 (first deployment), 500, or if data is trunca
 
 ## 4. Snapshot Wire Specification
 
+![Snapshot Wire Specification](/docs/Tric1enc_binary_data_packet_format_20260910185059.jpeg)
+
+::: details Binary Packet Layout
 ```
 ┌─────────────────┬─────────────────┬─────────────────┬───────────────────────────────┐
 │ Magic Header    │ Timestamp (8B)  │ AES-GCM IV (12B)│ Ciphertext & Auth Tag (MsgPack)│
 │ "TRIC1ENC" (8B) │ Big-Endian uint │ NIST 96-bit     │ Serialized L1 SmartCacheEntry │
 └─────────────────┴─────────────────┴─────────────────┴───────────────────────────────┘
 ```
+:::
 
 1. **Magic Header**: Identifies format (`TRIC1ENC` for AES-256-GCM, `TRIC1128` for AES-128-GCM, raw MsgPack when unencrypted).
 2. **Timestamp**: Unix epoch timestamp in milliseconds for `maxAgeMs` verification.
